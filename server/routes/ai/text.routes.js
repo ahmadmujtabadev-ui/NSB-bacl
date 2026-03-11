@@ -6,6 +6,7 @@ import { requireCredits, deductCredits } from '../../middleware/credits.js';
 import { logAIUsage } from '../../services/ai/ai.telemetry.js';
 import { STAGE_CREDIT_COSTS } from '../../services/ai/ai.billing.js';
 import { ValidationError } from '../../errors.js';
+import { Project } from '../../models/Project.js';
 
 const router = Router();
 

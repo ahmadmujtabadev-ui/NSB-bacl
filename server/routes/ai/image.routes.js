@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { generateImage } from '../../services/ai/image/image.providers.js';
-import { generateStageImage } from '../../services/ai/image/image.service.js';
+import { generateStageImage, getImagesPerChapter } from '../../services/ai/image/image.service.js';
 import { checkImageLimit } from '../../services/ai/policies/imageLimits.js';
 import { STAGE_CREDIT_COSTS } from '../../services/ai/ai.billing.js';
 import { deductCredits } from '../../middleware/credits.js';
 import { logAIUsage } from '../../services/ai/ai.telemetry.js';
 import { ValidationError } from '../../errors.js';
 import { estimateTokens } from '../../services/ai/policies/tokenBudget.js';
+import { Project } from '../../models/Project.js';
 
 const router = Router();
 
@@ -16,49 +17,150 @@ const STAGE_MAP = { illustration: 'illustrations', cover: 'cover', portrait: 'po
 // POST /api/ai/image/generate
 // Server-side — auto-fetches character refs from MongoDB
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/generate', async (req, res, next) => {
-  const { task, chapterIndex = 0, projectId, customPrompt, seed, style, traceId } = req.body;
-  console.log(`\n[ImageRoute /generate] task=${task} chapterIndex=${chapterIndex} projectId=${projectId}`);
+// router.post('/generate', async (req, res, next) => {
+//   const { task, chapterIndex = 0, projectId, customPrompt, seed, style, traceId } = req.body;
+//   console.log(`\n[ImageRoute /generate] task=${task} chapterIndex=${chapterIndex} projectId=${projectId}`);
 
-  if (!task)      return next(new ValidationError('task is required'));
+//   if (!task)      return next(new ValidationError('task is required'));
+//   if (!projectId) return next(new ValidationError('projectId is required'));
+
+//   const creditStage = STAGE_MAP[task] || 'illustrations';
+//   const cost        = STAGE_CREDIT_COSTS[creditStage] ?? 4;
+//   console.log(`[ImageRoute /generate] creditStage=${creditStage} cost=${cost} userCredits=${req.user.credits}`);
+
+//   if (req.user.credits < cost) {
+//     return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits, have ${req.user.credits}` } });
+//   }
+
+//   const start = Date.now();
+//   try {
+//     const result = await generateStageImage({
+//       task, chapterIndex: parseInt(chapterIndex, 10), projectId,
+//       userId: req.user._id.toString(), customPrompt, seed, style, traceId,
+//     });
+
+//     console.log(`[ImageRoute /generate] ✓ Success in ${Date.now() - start}ms — provider: ${result.provider}`);
+
+//     await deductCredits(req.user._id, cost, `AI Image: ${task}`, 'project', projectId);
+
+//     logAIUsage({
+//       userId: req.user._id, projectId, provider: result.provider, stage: creditStage,
+//       requestType: 'image', creditsCharged: cost, success: true, durationMs: Date.now() - start,
+//     });
+
+//     res.json(result);
+//   } catch (err) {
+//     console.error(`[ImageRoute /generate] ✗ Error: ${err.message}`);
+//     console.error(err.stack);
+//     logAIUsage({
+//       userId: req.user._id, projectId, provider: 'unknown', stage: task,
+//       requestType: 'image', creditsCharged: 0, success: false, errorCode: err.code,
+//     });
+//     next(err);
+//   }
+// });
+
+router.post('/generate', async (req, res, next) => {
+  const {
+    task,
+    chapterIndex,
+    projectId,
+    customPrompt,
+    seed,
+    style,
+    traceId,
+  } = req.body;
+
+  if (!task) return next(new ValidationError('task is required'));
   if (!projectId) return next(new ValidationError('projectId is required'));
 
-  const creditStage = STAGE_MAP[task] || 'illustrations';
-  const cost        = STAGE_CREDIT_COSTS[creditStage] ?? 4;
-  console.log(`[ImageRoute /generate] creditStage=${creditStage} cost=${cost} userCredits=${req.user.credits}`);
-
-  if (req.user.credits < cost) {
-    return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits, have ${req.user.credits}` } });
-  }
-
-  const start = Date.now();
   try {
-    const result = await generateStageImage({
-      task, chapterIndex: parseInt(chapterIndex, 10), projectId,
-      userId: req.user._id.toString(), customPrompt, seed, style, traceId,
-    });
+    const project = await Project.findOne({ _id: projectId, userId: req.user._id });
+    if (!project) throw new NotFoundError('Project not found');
 
-    console.log(`[ImageRoute /generate] ✓ Success in ${Date.now() - start}ms — provider: ${result.provider}`);
+    const start = Date.now();
 
-    await deductCredits(req.user._id, cost, `AI Image: ${task}`, 'project', projectId);
+    let result;
+    let totalCost = 0;
+
+    if (task === 'illustrations') {
+      const chapterCount = getSafeChapterCount(project);
+      const imagesPerChapter = getImagesPerChapter(project.ageRange);
+
+      totalCost = chapterCount * imagesPerChapter * 4;
+
+      if (req.user.credits < totalCost) {
+        return res.status(402).json({
+          error: {
+            code: 'INSUFFICIENT_CREDITS',
+            message: `Need ${totalCost} credits, have ${req.user.credits}`,
+          },
+        });
+      }
+
+      result = await generateBookIllustrations({
+        projectId,
+        userId: req.user._id.toString(),
+        style,
+        seed,
+        traceId,
+      });
+    } else {
+      totalCost = 4;
+
+      if (req.user.credits < totalCost) {
+        return res.status(402).json({
+          error: {
+            code: 'INSUFFICIENT_CREDITS',
+            message: `Need ${totalCost} credits, have ${req.user.credits}`,
+          },
+        });
+      }
+
+      result = await generateStageImage({
+        task,
+        chapterIndex: parseInt(chapterIndex ?? 0, 10),
+        projectId,
+        userId: req.user._id.toString(),
+        customPrompt,
+        seed,
+        style,
+        traceId,
+      });
+    }
+
+    await deductCredits(req.user._id, totalCost, `AI Image: ${task}`, 'project', projectId);
 
     logAIUsage({
-      userId: req.user._id, projectId, provider: result.provider, stage: creditStage,
-      requestType: 'image', creditsCharged: cost, success: true, durationMs: Date.now() - start,
+      userId: req.user._id,
+      projectId,
+      provider: result.provider || 'mixed',
+      stage: task,
+      requestType: 'image',
+      creditsCharged: totalCost,
+      success: true,
+      durationMs: Date.now() - start,
     });
 
-    res.json(result);
+    res.json({
+      ...result,
+      creditsCharged: totalCost,
+    });
   } catch (err) {
-    console.error(`[ImageRoute /generate] ✗ Error: ${err.message}`);
-    console.error(err.stack);
     logAIUsage({
-      userId: req.user._id, projectId, provider: 'unknown', stage: task,
-      requestType: 'image', creditsCharged: 0, success: false, errorCode: err.code,
+      userId: req.user._id,
+      projectId,
+      provider: 'unknown',
+      stage: task,
+      requestType: 'image',
+      creditsCharged: 0,
+      success: false,
+      errorCode: err.code,
     });
+
     next(err);
   }
 });
-
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/ai/image
 // Raw endpoint — caller supplies all params including references
@@ -68,7 +170,7 @@ router.post('/', async (req, res, next) => {
   console.log(`\n[ImageRoute /] task=${task} prompt="${prompt?.slice(0, 60)}" refs=${references?.length || 0}`);
 
   if (!prompt) return next(new ValidationError('prompt is required'));
-  if (!task)   return next(new ValidationError('task is required'));
+  if (!task) return next(new ValidationError('task is required'));
 
   const { ok, limit } = checkImageLimit(task, count);
   if (!ok) {
@@ -76,14 +178,14 @@ router.post('/', async (req, res, next) => {
   }
 
   const creditStage = STAGE_MAP[task] || 'illustrations';
-  const cost        = STAGE_CREDIT_COSTS[creditStage] ?? 4;
+  const cost = STAGE_CREDIT_COSTS[creditStage] ?? 4;
   console.log(`[ImageRoute /] creditStage=${creditStage} cost=${cost} userCredits=${req.user.credits}`);
 
   if (req.user.credits < cost) {
     return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits` } });
   }
 
-  const trId  = traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const trId = traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const start = Date.now();
 
   try {

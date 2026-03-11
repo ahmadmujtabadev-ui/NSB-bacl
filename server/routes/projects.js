@@ -105,8 +105,6 @@ router.delete('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/projects/:id/layout
-// Normalises artifacts from either array or object-key format before processing.
 router.post('/:id/layout', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id);
@@ -117,7 +115,6 @@ router.post('/:id/layout', async (req, res, next) => {
     const humanized = toArray(p.artifacts?.humanized);
     const chapters = toArray(p.artifacts?.chapters);
 
-    // Prefer humanized text, otherwise raw chapters
     const textContent = humanized.length ? humanized : chapters;
 
     if (!textContent.length) {
@@ -133,23 +130,13 @@ router.post('/:id/layout', async (req, res, next) => {
 
     const vocab = kb?.vocabulary || [];
 
-    const frontCoverUrl =
-      p.artifacts?.cover?.frontUrl ||
-      p.artifacts?.cover?.frontCoverUrl ||
-      p.artifacts?.cover?.imageUrl ||
-      null;
-
-    const backCoverUrl =
-      p.artifacts?.cover?.backUrl ||
-      p.artifacts?.cover?.backCoverUrl ||
-      null;
-
     const spreads = [
       {
         page: 1,
         type: 'cover',
         content: {
-          imageUrl: frontCoverUrl,
+          source: 'cover',
+          side: 'front',
         },
       },
       {
@@ -162,29 +149,31 @@ router.post('/:id/layout', async (req, res, next) => {
       },
     ];
 
-    // Build pages strictly from existing generated content
+    let nextPage = 3;
+
     textContent.forEach((ch, i) => {
       if (!ch) return;
 
       const ill = illustrations[i];
-
-      const selectedVariant =
-        ill?.variants?.[ill.selectedVariantIndex ?? 0] ||
-        ill?.variants?.find((v) => v?.selected) ||
-        ill?.variants?.[0] ||
-        null;
+      const selectedVariantIndex =
+        ill?.selectedVariantIndex ??
+        ill?.variants?.findIndex((v) => v?.selected) ??
+        0;
 
       spreads.push({
-        page: 3 + i * 2,
+        page: nextPage++,
         type: 'illustration',
         content: {
-          imageUrl: selectedVariant?.imageUrl || null,
+          source: 'illustrations',
           chapterNumber: ch.chapterNumber || i + 1,
+          chapterIndex: i,
+          variantIndex:
+            selectedVariantIndex >= 0 ? selectedVariantIndex : 0,
         },
       });
 
       spreads.push({
-        page: 4 + i * 2,
+        page: nextPage++,
         type: 'text',
         content: {
           chapterTitle: ch.chapterTitle || ch.title || `Chapter ${i + 1}`,
@@ -194,30 +183,28 @@ router.post('/:id/layout', async (req, res, next) => {
       });
     });
 
-    let nextPage = 3 + textContent.length * 2;
-
     if (vocab.length) {
       spreads.push({
-        page: nextPage,
+        page: nextPage++,
         type: 'glossary',
         content: {
           vocabulary: vocab,
         },
       });
-      nextPage += 1;
     }
 
     spreads.push({
-      page: nextPage,
+      page: nextPage++,
       type: 'back-cover',
       content: {
-        imageUrl: backCoverUrl,
+        source: 'cover',
+        side: 'back',
       },
     });
 
     const layout = {
       spreads,
-      pageCount: nextPage,
+      pageCount: nextPage - 1,
       trimSize: p.trimSize || '6x9',
     };
 
@@ -231,6 +218,131 @@ router.post('/:id/layout', async (req, res, next) => {
     next(e);
   }
 });
+
+// router.post('/:id/layout', async (req, res, next) => {
+//   try {
+//     const p = await Project.findById(req.params.id);
+//     if (!p) throw new NotFoundError('Project not found');
+//     if (!p.userId.equals(req.user._id)) throw new ForbiddenError();
+
+//     const illustrations = toArray(p.artifacts?.illustrations);
+//     const humanized = toArray(p.artifacts?.humanized);
+//     const chapters = toArray(p.artifacts?.chapters);
+
+//     // Prefer humanized text, otherwise raw chapters
+//     const textContent = humanized.length ? humanized : chapters;
+
+//     if (!textContent.length) {
+//       throw new ValidationError('Chapters or humanized content must be completed before layout');
+//     }
+
+//     const kb = p.universeId
+//       ? await KnowledgeBase.findOne({
+//         universeId: p.universeId,
+//         userId: req.user._id,
+//       })
+//       : null;
+
+//     const vocab = kb?.vocabulary || [];
+
+//     const frontCoverUrl =
+//       p.artifacts?.cover?.frontUrl ||
+//       p.artifacts?.cover?.frontCoverUrl ||
+//       p.artifacts?.cover?.imageUrl ||
+//       null;
+
+//     const backCoverUrl =
+//       p.artifacts?.cover?.backUrl ||
+//       p.artifacts?.cover?.backCoverUrl ||
+//       null;
+
+//     const spreads = [
+//       {
+//         page: 1,
+//         type: 'cover',
+//         content: {
+//           imageUrl: frontCoverUrl,
+//         },
+//       },
+//       {
+//         page: 2,
+//         type: 'title-page',
+//         content: {
+//           title: p.title,
+//           author: p.authorName || '',
+//         },
+//       },
+//     ];
+
+//     // Build pages strictly from existing generated content
+//     textContent.forEach((ch, i) => {
+//       if (!ch) return;
+
+//       const ill = illustrations[i];
+
+//       const selectedVariant =
+//         ill?.variants?.[ill.selectedVariantIndex ?? 0] ||
+//         ill?.variants?.find((v) => v?.selected) ||
+//         ill?.variants?.[0] ||
+//         null;
+
+//       spreads.push({
+//         page: 3 + i * 2,
+//         type: 'illustration',
+//         content: {
+//           imageUrl: selectedVariant?.imageUrl || null,
+//           chapterNumber: ch.chapterNumber || i + 1,
+//         },
+//       });
+
+//       spreads.push({
+//         page: 4 + i * 2,
+//         type: 'text',
+//         content: {
+//           chapterTitle: ch.chapterTitle || ch.title || `Chapter ${i + 1}`,
+//           text: ch.text || ch.edited_text || ch.content || '',
+//           chapterNumber: ch.chapterNumber || i + 1,
+//         },
+//       });
+//     });
+
+//     let nextPage = 3 + textContent.length * 2;
+
+//     if (vocab.length) {
+//       spreads.push({
+//         page: nextPage,
+//         type: 'glossary',
+//         content: {
+//           vocabulary: vocab,
+//         },
+//       });
+//       nextPage += 1;
+//     }
+
+//     spreads.push({
+//       page: nextPage,
+//       type: 'back-cover',
+//       content: {
+//         imageUrl: backCoverUrl,
+//       },
+//     });
+
+//     const layout = {
+//       spreads,
+//       pageCount: nextPage,
+//       trimSize: p.trimSize || '6x9',
+//     };
+
+//     p.artifacts.layout = layout;
+//     p.currentStage = 'layout';
+//     p.markModified('artifacts');
+//     await p.save();
+
+//     res.json({ layout });
+//   } catch (e) {
+//     next(e);
+//   }
+// });
 
 // POST /api/projects/:id/publish
 router.post('/:id/publish', async (req, res, next) => {
