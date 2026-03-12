@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { generateImage } from '../../services/ai/image/image.providers.js';
-import { generateStageImage, getImagesPerChapter } from '../../services/ai/image/image.service.js';
+import { generateBookIllustrations, generateStageImage, getImagesPerChapter, getSafeChapterCount } from '../../services/ai/image/image.service.js';
 import { checkImageLimit } from '../../services/ai/policies/imageLimits.js';
 import { STAGE_CREDIT_COSTS } from '../../services/ai/ai.billing.js';
 import { deductCredits } from '../../middleware/credits.js';
@@ -161,6 +161,7 @@ router.post('/generate', async (req, res, next) => {
     next(err);
   }
 });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/ai/image
 // Raw endpoint — caller supplies all params including references
