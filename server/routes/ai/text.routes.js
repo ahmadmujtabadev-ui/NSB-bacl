@@ -103,6 +103,33 @@ router.post('/generate', async (req, res, next) => {
       usage = res1.usage;
       provider = res1.provider;
     }
+    // ── Dedication page ───────────────────────────────────────────────────────
+    else if (stage === 'dedication') {
+      await chargeStage('dedication', 1);
+
+      const res1 = await generateStageText({
+        stage: 'dedication',
+        projectId,
+        userId: req.user._id.toString(),
+      });
+      result = res1.result;
+      usage = res1.usage;
+      provider = res1.provider;
+    }
+
+    // ── Theme / Islamic reference page ────────────────────────────────────────
+    else if (stage === 'theme') {
+      await chargeStage('theme', 1);
+
+      const res1 = await generateStageText({
+        stage: 'theme',
+        projectId,
+        userId: req.user._id.toString(),
+      });
+      result = res1.result;
+      usage = res1.usage;
+      provider = res1.provider;
+    }
 
     // ── Chapters (generate all) ────────────────────────
     else if (stage === 'chapters') {
@@ -260,7 +287,7 @@ router.post('/text', async (req, res, next) => {
   }
 
   const maxOut = Math.min(maxOutputTokens || 1000, budget?.maxOutputTokens || 2000);
-  const cost   = STAGE_CREDIT_COSTS[stage] ?? 1;
+  const cost = STAGE_CREDIT_COSTS[stage] ?? 1;
 
   if (req.user.credits < cost) {
     return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits` } });
@@ -275,7 +302,7 @@ router.post('/text', async (req, res, next) => {
     logAIUsage({
       userId: req.user._id, projectId, provider: aiRes.provider, stage,
       requestType: 'text',
-      tokensIn:  aiRes.usage?.inputTokens  || promptTokens,
+      tokensIn: aiRes.usage?.inputTokens || promptTokens,
       tokensOut: aiRes.usage?.outputTokens,
       creditsCharged: cost,
       success: true,

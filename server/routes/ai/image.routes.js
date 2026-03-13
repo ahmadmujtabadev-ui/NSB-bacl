@@ -8,6 +8,7 @@ import { logAIUsage } from '../../services/ai/ai.telemetry.js';
 import { ValidationError } from '../../errors.js';
 import { estimateTokens } from '../../services/ai/policies/tokenBudget.js';
 import { Project } from '../../models/Project.js';
+import { generateStageText } from '../../services/ai/text/text.service.js';
 
 const router = Router();
 
@@ -60,10 +61,32 @@ const STAGE_MAP = { illustration: 'illustrations', cover: 'cover', portrait: 'po
 //   }
 // });
 
+// server/routes/ai/text.generate.router.js
+// ── Text generation router ────────────────────────────────────────────────────
+// Stages:
+//   outline     → full book outline (chapters array + dedication + islamicTheme)
+//   dedication  → page 2 — warm author message to parents/children
+//   theme       → page 3 — Islamic reference / hadees / Quran page
+//   chapters    → generate ALL chapters (picture-book: spreads; chapter-book: prose)
+//   chapter     → generate SINGLE chapter (chapterIndex required)
+//   humanize    → polish ALL chapters
+// ─────────────────────────────────────────────────────────────────────────────
+
+// server/routes/ai/image.generate.router.js
+// ── Image generation router ───────────────────────────────────────────────────
+// Tasks:
+//   illustrations  → generate ALL chapter spreads (picture-book) or chapter images
+//   illustration   → single spread / chapter image rerun  (chapterIndex + spreadIndex)
+//   cover          → front cover
+//   back-cover     → back cover
+//   pose-sheet     → character pose sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
 router.post('/generate', async (req, res, next) => {
   const {
     task,
     chapterIndex,
+    spreadIndex,      // ← NEW: which spread within the chapter (picture-book only)
     projectId,
     customPrompt,
     seed,
@@ -79,11 +102,11 @@ router.post('/generate', async (req, res, next) => {
     if (!project) throw new NotFoundError('Project not found');
 
     const start = Date.now();
-
     let result;
     let totalCost = 0;
 
     if (task === 'illustrations') {
+      // Full-book illustration run
       const chapterCount = getSafeChapterCount(project);
       const imagesPerChapter = getImagesPerChapter(project.ageRange);
 
@@ -105,7 +128,9 @@ router.post('/generate', async (req, res, next) => {
         seed,
         traceId,
       });
+
     } else {
+      // Single image task
       totalCost = 4;
 
       if (req.user.credits < totalCost) {
@@ -120,6 +145,7 @@ router.post('/generate', async (req, res, next) => {
       result = await generateStageImage({
         task,
         chapterIndex: parseInt(chapterIndex ?? 0, 10),
+        spreadIndex: parseInt(spreadIndex ?? 0, 10),   // ← passed through
         projectId,
         userId: req.user._id.toString(),
         customPrompt,
@@ -142,10 +168,8 @@ router.post('/generate', async (req, res, next) => {
       durationMs: Date.now() - start,
     });
 
-    res.json({
-      ...result,
-      creditsCharged: totalCost,
-    });
+    res.json({ ...result, creditsCharged: totalCost });
+
   } catch (err) {
     logAIUsage({
       userId: req.user._id,
@@ -157,7 +181,6 @@ router.post('/generate', async (req, res, next) => {
       success: false,
       errorCode: err.code,
     });
-
     next(err);
   }
 });

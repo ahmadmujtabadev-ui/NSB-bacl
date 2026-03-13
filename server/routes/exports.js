@@ -25,7 +25,7 @@ router.get("/:projectId", async (req, res, next) => {
   }
 });
 
-// POST /api/exports — generate & stream PDF
+
 router.post("/", async (req, res, next) => {
   let exportDoc = null;
 

@@ -8,15 +8,13 @@ import { KnowledgeBase } from '../models/KnowledgeBase.js';
 import { NotFoundError, ForbiddenError, ValidationError } from '../errors.js';
 
 const router = Router();
-const ARTIFACT_STAGES = ['outline', 'chapters', 'humanized', 'illustrations', 'cover', 'layout', 'export'];
+const ARTIFACT_STAGES = ['outline', 'dedication', 'themePage', 'chapters', 'humanized', 'illustrations', 'cover', 'layout', 'export'];
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-// Mongoose Mixed stores dot-notation "arrays" as { '0': v, '1': v, '2': v }.
-// This normalises either format to a real JS array so .forEach / .length work.
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function toArray(val) {
   if (!val) return [];
   if (Array.isArray(val)) return val.filter(v => v != null);
-  // Object with numeric string keys
   const numericKeys = Object.keys(val).map(Number).filter(n => !isNaN(n));
   if (!numericKeys.length) return [];
   const arr = [];
@@ -24,7 +22,89 @@ function toArray(val) {
   return arr.filter(v => v != null);
 }
 
-// GET /api/projects
+function isPictureBook(ageRange) {
+  if (!ageRange) return true;
+  const first = String(ageRange).match(/\d+/)?.[0];
+  return first ? Number(first) <= 8 : true;
+}
+
+/**
+ * Safely extract a string from a value — trims whitespace, returns '' for nullish.
+ */
+function str(val) {
+  if (val == null) return '';
+  return String(val).trim();
+}
+
+/**
+ * Resolve themePage fields robustly — handles both old and new field naming.
+ * Old save format:  { title, arabicPhrase, transliteration, meaning, reference, referenceText, whyWeDoIt, dailyPractice }
+ * New save format:  { sectionTitle, arabicPhrase, transliteration, meaning, referenceType, referenceSource, referenceText, explanation, dailyPractice }
+ */
+function resolveThemePage(tp) {
+  if (!tp) return null;
+  return {
+    sectionTitle:    str(tp.sectionTitle    || tp.title),
+    arabicPhrase:    str(tp.arabicPhrase),
+    transliteration: str(tp.transliteration),
+    meaning:         str(tp.meaning),
+    referenceType:   str(tp.referenceType   || 'quran'),
+    referenceSource: str(tp.referenceSource || tp.reference),
+    referenceText:   str(tp.referenceText),
+    explanation:     str(tp.explanation     || tp.whyWeDoIt),
+    dailyPractice:   str(tp.dailyPractice),
+  };
+}
+
+/**
+ * Resolve dedication fields robustly.
+ */
+function resolveDedication(d) {
+  if (!d) return null;
+  return {
+    greeting:             str(d.greeting),
+    message:              str(d.message),
+    closing:              str(d.closing),
+    includeQrPlaceholder: d.includeQrPlaceholder ?? true,
+  };
+}
+
+/**
+ * Extract the best text content from a chapter object.
+ * Handles both raw chapters and humanized chapters.
+ */
+function resolveChapterText(ch) {
+  if (!ch) return '';
+  return str(ch.text || ch.edited_text || ch.content || ch.body || '');
+}
+
+/**
+ * Extract spreads from a chapter — from textContent and illustration chapter.
+ * Returns a merged array of spread objects with all fields populated.
+ */
+function mergeSpreads(textCh, illCh) {
+  const textSpreads = toArray(textCh?.spreads);
+  const illSpreads  = toArray(illCh?.spreads);
+  const count       = Math.max(textSpreads.length, illSpreads.length, 1);
+
+  const merged = [];
+  for (let si = 0; si < count; si++) {
+    const t = textSpreads[si] || {};
+    const i = illSpreads[si]  || {};
+    merged.push({
+      spreadIndex:      si,
+      text:             str(t.text             || i.text),
+      textPosition:     str(t.textPosition     || i.textPosition     || 'bottom'),
+      illustrationHint: str(t.illustrationHint || i.illustrationHint),
+      imageUrl:         str(i.imageUrl         || ''),
+      hasImage:         !!(i.imageUrl),
+    });
+  }
+  return merged;
+}
+
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
+
 router.get('/', async (req, res, next) => {
   try {
     const projects = await Project.find({ userId: req.user._id })
@@ -33,7 +113,6 @@ router.get('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/projects
 router.post('/', async (req, res, next) => {
   try {
     const { universeId, characterIds = [], title, ageRange, chapterCount, template, learningObjective, authorName, trimSize } = req.body;
@@ -61,7 +140,6 @@ router.post('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// GET /api/projects/:id
 router.get('/:id', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id).populate('universeId').populate('characterIds');
@@ -71,7 +149,6 @@ router.get('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// PUT /api/projects/:id — auto-save, merges artifacts stage by stage
 router.put('/:id', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id);
@@ -93,7 +170,6 @@ router.put('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// DELETE /api/projects/:id
 router.delete('/:id', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id);
@@ -105,246 +181,292 @@ router.delete('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ─── Layout ───────────────────────────────────────────────────────────────────
+
 router.post('/:id/layout', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id);
     if (!p) throw new NotFoundError('Project not found');
     if (!p.userId.equals(req.user._id)) throw new ForbiddenError();
 
+    const pictureBook   = isPictureBook(p.ageRange);
     const illustrations = toArray(p.artifacts?.illustrations);
-    const humanized = toArray(p.artifacts?.humanized);
-    const chapters = toArray(p.artifacts?.chapters);
 
-    const textContent = humanized.length ? humanized : chapters;
+    // ── Resolve text content: prefer humanized, fall back to chapters ─────────
+    const humanized  = toArray(p.artifacts?.humanized);
+    const rawChapters = toArray(p.artifacts?.chapters);
+    const textContent = humanized.length ? humanized : rawChapters;
 
     if (!textContent.length) {
-      throw new ValidationError('Chapters or humanized content must be completed before layout');
+      throw new ValidationError('Chapters must be completed before layout');
     }
 
-    const kb = p.universeId
-      ? await KnowledgeBase.findOne({
-        universeId: p.universeId,
-        userId: req.user._id,
-      })
-      : null;
+    // ── Resolve support data ──────────────────────────────────────────────────
+    const kb    = p.universeId ? await KnowledgeBase.findOne({ universeId: p.universeId, userId: req.user._id }) : null;
+    const vocab = toArray(kb?.vocabulary);
+    const duas  = toArray(kb?.duas);
 
-    const vocab = kb?.vocabulary || [];
+    // ── Resolve artifact sections ─────────────────────────────────────────────
+    const dedication  = resolveDedication(p.artifacts?.dedication);
+    const themePage   = resolveThemePage(p.artifacts?.themePage);
+    const outline     = p.artifacts?.outline || {};
 
-    const spreads = [
-      {
-        page: 1,
-        type: 'cover',
-        content: {
-          source: 'cover',
-          side: 'front',
-        },
+    const bookTitle = str(outline.bookTitle || p.title);
+    const bookMoral = str(outline.moral);
+    const author    = str(p.authorName);
+
+    // ── Cover image URLs ──────────────────────────────────────────────────────
+    const frontCoverUrl = str(
+      p.artifacts?.cover?.frontUrl ||
+      p.artifacts?.cover?.imageUrl ||
+      ''
+    );
+    const backCoverUrl = str(
+      p.artifacts?.cover?.backUrl || ''
+    );
+
+    const spreads = [];
+    let pageNum   = 1;
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PAGE 1: Front Cover
+    // ════════════════════════════════════════════════════════════════════════
+    spreads.push({
+      page:    pageNum++,
+      type:    'cover',
+      content: {
+        imageUrl:  frontCoverUrl  || null,
+        title:     bookTitle,
+        author,
+        hasImage:  !!frontCoverUrl,
       },
-      {
-        page: 2,
-        type: 'title-page',
-        content: {
-          title: p.title,
-          author: p.authorName || '',
-        },
-      },
-    ];
-
-    let nextPage = 3;
-
-    textContent.forEach((ch, i) => {
-      if (!ch) return;
-
-      const ill = illustrations[i];
-      const selectedVariantIndex =
-        ill?.selectedVariantIndex ??
-        ill?.variants?.findIndex((v) => v?.selected) ??
-        0;
-
-      spreads.push({
-        page: nextPage++,
-        type: 'illustration',
-        content: {
-          source: 'illustrations',
-          chapterNumber: ch.chapterNumber || i + 1,
-          chapterIndex: i,
-          variantIndex:
-            selectedVariantIndex >= 0 ? selectedVariantIndex : 0,
-        },
-      });
-
-      spreads.push({
-        page: nextPage++,
-        type: 'text',
-        content: {
-          chapterTitle: ch.chapterTitle || ch.title || `Chapter ${i + 1}`,
-          text: ch.text || ch.edited_text || ch.content || '',
-          chapterNumber: ch.chapterNumber || i + 1,
-        },
-      });
     });
 
+    // ════════════════════════════════════════════════════════════════════════
+    // PAGE 2: Title Page
+    // ════════════════════════════════════════════════════════════════════════
+    spreads.push({
+      page:    pageNum++,
+      type:    'title-page',
+      content: {
+        title:    bookTitle,
+        author,
+        moral:    bookMoral,
+        ageRange: str(p.ageRange),
+      },
+    });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PAGE 3: Dedication (if exists and has content)
+    // ════════════════════════════════════════════════════════════════════════
+    if (dedication && (dedication.greeting || dedication.message || dedication.closing)) {
+      spreads.push({
+        page:    pageNum++,
+        type:    'dedication',
+        content: {
+          greeting:             dedication.greeting,
+          message:              dedication.message,
+          closing:              dedication.closing,
+          includeQrPlaceholder: dedication.includeQrPlaceholder,
+          author,
+        },
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PAGE 4: Islamic Theme Page (if exists and has content)
+    // ════════════════════════════════════════════════════════════════════════
+    if (themePage && (themePage.sectionTitle || themePage.arabicPhrase || themePage.meaning)) {
+      spreads.push({
+        page:    pageNum++,
+        type:    'theme-page',
+        content: {
+          sectionTitle:    themePage.sectionTitle,
+          arabicPhrase:    themePage.arabicPhrase,
+          transliteration: themePage.transliteration,
+          meaning:         themePage.meaning,
+          referenceType:   themePage.referenceType,
+          referenceSource: themePage.referenceSource,
+          referenceText:   themePage.referenceText,
+          explanation:     themePage.explanation,
+          dailyPractice:   themePage.dailyPractice,
+        },
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // STORY PAGES
+    // ════════════════════════════════════════════════════════════════════════
+
+    if (pictureBook) {
+      // ── PICTURE BOOK ───────────────────────────────────────────────────────
+      // Each spread = one full-bleed illustration + text overlay on the same page.
+      // Data lives in: textContent[ci].spreads[si] + illustrations[ci].spreads[si]
+
+      textContent.forEach((ch, ci) => {
+        if (!ch) return;
+
+        const illChapter   = illustrations[ci] || {};
+        const chapterNum   = ch.chapterNumber  || ci + 1;
+        const chapterTitle = str(ch.chapterTitle || `Chapter ${chapterNum}`);
+
+        // Chapter divider — only when there is more than one chapter
+        if (textContent.length > 1) {
+          spreads.push({
+            page:    pageNum++,
+            type:    'chapter-divider',
+            content: { chapterNumber: chapterNum, chapterTitle },
+          });
+        }
+
+        // Merge text spreads + illustration spreads
+        const mergedSpreads = mergeSpreads(ch, illChapter);
+
+        mergedSpreads.forEach(spread => {
+          spreads.push({
+            page:    pageNum++,
+            type:    'picture-spread',
+            content: {
+              chapterNumber:    chapterNum,
+              chapterIndex:     ci,
+              chapterTitle,
+              spreadIndex:      spread.spreadIndex,
+              // Text
+              text:             spread.text,
+              textPosition:     spread.textPosition,
+              // Illustration
+              imageUrl:         spread.imageUrl  || null,
+              hasImage:         spread.hasImage,
+              illustrationHint: spread.illustrationHint,
+            },
+          });
+        });
+      });
+
+    } else {
+      // ── CHAPTER BOOK ───────────────────────────────────────────────────────
+      // Each chapter = 1 illustration page + 1 text page.
+
+      textContent.forEach((ch, ci) => {
+        if (!ch) return;
+
+        const illChapter      = illustrations[ci] || {};
+        const chapterNum      = ch.chapterNumber  || ci + 1;
+        const chapterTitle    = str(ch.chapterTitle || `Chapter ${chapterNum}`);
+        const selectedIdx     = illChapter.selectedVariantIndex ?? 0;
+        const variants        = toArray(illChapter.variants);
+        const selectedVariant = variants[selectedIdx] || variants[0] || null;
+        const imageUrl        = str(selectedVariant?.imageUrl || '');
+
+        // Chapter opening illustration
+        spreads.push({
+          page:    pageNum++,
+          type:    'chapter-illustration',
+          content: {
+            imageUrl:      imageUrl || null,
+            chapterNumber: chapterNum,
+            chapterTitle,
+            chapterIndex:  ci,
+            variantIndex:  selectedIdx,
+            hasImage:      !!imageUrl,
+          },
+        });
+
+        // Chapter text
+        spreads.push({
+          page:    pageNum++,
+          type:    'chapter-text',
+          content: {
+            chapterNumber: chapterNum,
+            chapterIndex:  ci,
+            chapterTitle,
+            text:          resolveChapterText(ch),
+          },
+        });
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // GLOSSARY (if vocabulary exists)
+    // ════════════════════════════════════════════════════════════════════════
     if (vocab.length) {
       spreads.push({
-        page: nextPage++,
-        type: 'glossary',
-        content: {
-          vocabulary: vocab,
-        },
+        page:    pageNum++,
+        type:    'glossary',
+        content: { vocabulary: vocab },
       });
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    // DUA PAGE (if duas exist)
+    // ════════════════════════════════════════════════════════════════════════
+    if (duas.length) {
+      spreads.push({
+        page:    pageNum++,
+        type:    'duas-page',
+        content: { duas },
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // BACK COVER (always last)
+    // ════════════════════════════════════════════════════════════════════════
     spreads.push({
-      page: nextPage++,
-      type: 'back-cover',
+      page:    pageNum++,
+      type:    'back-cover',
       content: {
-        source: 'cover',
-        side: 'back',
+        imageUrl: backCoverUrl || null,
+        moral:    bookMoral,
+        hasImage: !!backCoverUrl,
       },
     });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // BUILD FINAL LAYOUT OBJECT
+    // ════════════════════════════════════════════════════════════════════════
+    const totalPages    = pageNum - 1;
+    const storyPages    = spreads.filter(s => s.type === 'picture-spread' || s.type === 'chapter-illustration');
+    const missingImages = storyPages.filter(s => !s.content.hasImage).length;
 
     const layout = {
       spreads,
-      pageCount: nextPage - 1,
-      trimSize: p.trimSize || '6x9',
+      pageCount:     totalPages,
+      trimSize:      str(p.trimSize || '8.5x8.5'),
+      format:        pictureBook ? 'picture-book' : 'chapter-book',
+      ageRange:      str(p.ageRange),
+      title:         bookTitle,
+      author,
+      moral:         bookMoral,
+      // Section flags (used by PDF renderer to know what to render)
+      hasCover:      true,
+      hasDedication: !!(dedication && (dedication.greeting || dedication.message)),
+      hasThemePage:  !!(themePage && (themePage.sectionTitle || themePage.arabicPhrase)),
+      hasGlossary:   vocab.length > 0,
+      hasDuas:       duas.length > 0,
+      hasBackCover:  true,
+      // Debug info
+      storyPageCount: storyPages.length,
+      missingImages,
+      generatedAt:   new Date().toISOString(),
     };
 
     p.artifacts.layout = layout;
-    p.currentStage = 'layout';
+    p.currentStage     = 'layout';
     p.markModified('artifacts');
     await p.save();
 
+    console.log(`[Layout] ✓ ${layout.format} | ${totalPages} pages | ${spreads.length} spreads`);
+    console.log(`[Layout] Sections: cover${layout.hasDedication ? ', dedication' : ''}${layout.hasThemePage ? ', theme' : ''}, ${storyPages.length} story pages${layout.hasGlossary ? ', glossary' : ''}${layout.hasDuas ? ', duas' : ''}, back-cover`);
+    if (missingImages > 0) {
+      console.warn(`[Layout] ⚠ ${missingImages} story page(s) have no illustration yet`);
+    }
+
     res.json({ layout });
-  } catch (e) {
-    next(e);
-  }
+  } catch (e) { next(e); }
 });
 
-// router.post('/:id/layout', async (req, res, next) => {
-//   try {
-//     const p = await Project.findById(req.params.id);
-//     if (!p) throw new NotFoundError('Project not found');
-//     if (!p.userId.equals(req.user._id)) throw new ForbiddenError();
+// ─── Publish ──────────────────────────────────────────────────────────────────
 
-//     const illustrations = toArray(p.artifacts?.illustrations);
-//     const humanized = toArray(p.artifacts?.humanized);
-//     const chapters = toArray(p.artifacts?.chapters);
-
-//     // Prefer humanized text, otherwise raw chapters
-//     const textContent = humanized.length ? humanized : chapters;
-
-//     if (!textContent.length) {
-//       throw new ValidationError('Chapters or humanized content must be completed before layout');
-//     }
-
-//     const kb = p.universeId
-//       ? await KnowledgeBase.findOne({
-//         universeId: p.universeId,
-//         userId: req.user._id,
-//       })
-//       : null;
-
-//     const vocab = kb?.vocabulary || [];
-
-//     const frontCoverUrl =
-//       p.artifacts?.cover?.frontUrl ||
-//       p.artifacts?.cover?.frontCoverUrl ||
-//       p.artifacts?.cover?.imageUrl ||
-//       null;
-
-//     const backCoverUrl =
-//       p.artifacts?.cover?.backUrl ||
-//       p.artifacts?.cover?.backCoverUrl ||
-//       null;
-
-//     const spreads = [
-//       {
-//         page: 1,
-//         type: 'cover',
-//         content: {
-//           imageUrl: frontCoverUrl,
-//         },
-//       },
-//       {
-//         page: 2,
-//         type: 'title-page',
-//         content: {
-//           title: p.title,
-//           author: p.authorName || '',
-//         },
-//       },
-//     ];
-
-//     // Build pages strictly from existing generated content
-//     textContent.forEach((ch, i) => {
-//       if (!ch) return;
-
-//       const ill = illustrations[i];
-
-//       const selectedVariant =
-//         ill?.variants?.[ill.selectedVariantIndex ?? 0] ||
-//         ill?.variants?.find((v) => v?.selected) ||
-//         ill?.variants?.[0] ||
-//         null;
-
-//       spreads.push({
-//         page: 3 + i * 2,
-//         type: 'illustration',
-//         content: {
-//           imageUrl: selectedVariant?.imageUrl || null,
-//           chapterNumber: ch.chapterNumber || i + 1,
-//         },
-//       });
-
-//       spreads.push({
-//         page: 4 + i * 2,
-//         type: 'text',
-//         content: {
-//           chapterTitle: ch.chapterTitle || ch.title || `Chapter ${i + 1}`,
-//           text: ch.text || ch.edited_text || ch.content || '',
-//           chapterNumber: ch.chapterNumber || i + 1,
-//         },
-//       });
-//     });
-
-//     let nextPage = 3 + textContent.length * 2;
-
-//     if (vocab.length) {
-//       spreads.push({
-//         page: nextPage,
-//         type: 'glossary',
-//         content: {
-//           vocabulary: vocab,
-//         },
-//       });
-//       nextPage += 1;
-//     }
-
-//     spreads.push({
-//       page: nextPage,
-//       type: 'back-cover',
-//       content: {
-//         imageUrl: backCoverUrl,
-//       },
-//     });
-
-//     const layout = {
-//       spreads,
-//       pageCount: nextPage,
-//       trimSize: p.trimSize || '6x9',
-//     };
-
-//     p.artifacts.layout = layout;
-//     p.currentStage = 'layout';
-//     p.markModified('artifacts');
-//     await p.save();
-
-//     res.json({ layout });
-//   } catch (e) {
-//     next(e);
-//   }
-// });
-
-// POST /api/projects/:id/publish
 router.post('/:id/publish', async (req, res, next) => {
   try {
     const p = await Project.findById(req.params.id);
@@ -352,7 +474,7 @@ router.post('/:id/publish', async (req, res, next) => {
     if (!p.userId.equals(req.user._id)) throw new ForbiddenError();
     if (!p.shareToken) p.shareToken = randomBytes(16).toString('hex');
     p.publishedAt = new Date();
-    p.status = 'complete';
+    p.status      = 'complete';
     await p.save();
     res.json({ shareUrl: `/shared/${p.shareToken}`, shareToken: p.shareToken });
   } catch (e) { next(e); }
