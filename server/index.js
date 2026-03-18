@@ -13,6 +13,7 @@ import universesRoutes from './routes/universes.js';
 import charactersRoutes from './routes/characters.js';
 import knowledgeBasesRoutes from './routes/knowledgeBases.js';
 import projectsRoutes from './routes/projects.js';
+import pagesRoutes from './routes/pages.js';
 import exportsRoutes from './routes/exports.js';
 import paymentsRoutes from './routes/payments.js';
 import webhooksRoutes from './routes/webhooks.js';
@@ -48,6 +49,7 @@ app.use('/api/universes', authenticate, universesRoutes);
 app.use('/api/characters', authenticate, charactersRoutes);
 app.use('/api/knowledge-bases', authenticate, knowledgeBasesRoutes);
 app.use('/api/projects', authenticate, projectsRoutes);
+app.use('/api/projects', authenticate, pagesRoutes);   // ← page-level editing & approval
 app.use('/api/exports', authenticate, exportsRoutes);
 app.use('/api/payments', authenticate, paymentsRoutes);
 app.use('/api/admin', authenticate, adminRoutes);
