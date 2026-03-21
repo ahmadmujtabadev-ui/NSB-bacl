@@ -1,5 +1,3 @@
-// server/routes/ai/image.routes.js
-
 import { Router } from 'express';
 import {
   generateBookIllustrations,
@@ -19,7 +17,9 @@ import { Character } from '../../models/Character.js';
 
 const router = Router();
 
-// ─── Billing helpers ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 function countSpreadsToBill(project) {
   const allSpreads = normArr(project.artifacts?.spreads || []);
@@ -50,7 +50,9 @@ function countChapterIllustrationsToBill(project) {
   return total;
 }
 
-// ─── POST /api/ai/image/generate ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/ai/image/generate
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/generate', async (req, res, next) => {
   const {
@@ -81,13 +83,13 @@ router.post('/generate', async (req, res, next) => {
     let result;
     let totalCost = 0;
 
-    // ── FULL BOOK ILLUSTRATIONS ───────────────────────────────────────────────
+    // ── FULL BOOK ILLUSTRATIONS ──────────────────────────────────────────────
     if (task === 'illustrations') {
       const toGenerate = isSpreadOnlyProject(project)
         ? countSpreadsToBill(project)
         : countChapterIllustrationsToBill(project);
 
-      totalCost = Math.max(toGenerate * 4, 4);
+      totalCost = Math.max(toGenerate * (STAGE_CREDIT_COSTS.illustration ?? 4), STAGE_CREDIT_COSTS.illustration ?? 4);
 
       if (req.user.credits < totalCost) {
         return res.status(402).json({
@@ -107,15 +109,24 @@ router.post('/generate', async (req, res, next) => {
         seed,
         traceId,
       });
+    }
 
-    // ── STEP 4: VARIANTS FOR ONE IMAGE SLOT ─────────────────────────────────
-    } else if (task === 'illustration-variants') {
+    // ── STEP 4: VARIANTS FOR ONE SLOT ────────────────────────────────────────
+    else if (task === 'illustration-variants') {
       const ci = parseInt(chapterIndex ?? 0, 10);
       const si = parseInt(spreadIndex ?? 0, 10);
 
+      if (Number.isNaN(ci) || ci < 0) {
+        throw new ValidationError('chapterIndex must be a valid non-negative number');
+      }
+
+      if (Number.isNaN(si) || si < 0) {
+        throw new ValidationError('spreadIndex must be a valid non-negative number');
+      }
+
       if (!isSpreadOnlyProject(project)) {
         const maxSlots = getImagesPerChapter(project.ageRange);
-        if (si < 0 || si >= maxSlots) {
+        if (si >= maxSlots) {
           throw new ValidationError(
             `spreadIndex out of range for ${getAgeMode(project.ageRange)}. Allowed 0-${maxSlots - 1}`
           );
@@ -158,10 +169,18 @@ router.post('/generate', async (req, res, next) => {
           prompt: r.prompt,
           seed: variantSeed,
           provider: r.provider,
+          sceneCharacters: r.sceneCharacters || [],
+          poseSelection: r.poseSelection || [],
+          momentTitle: r.momentTitle || '',
+          illustrationHint: r.illustrationHint || '',
+          sceneEnvironment: r.sceneEnvironment || '',
+          timeOfDay: r.timeOfDay || '',
         });
       }
 
       const freshProject = await Project.findById(projectId);
+      if (!freshProject) throw new NotFoundError('Project not found after variant generation');
+
       const arts = freshProject.artifacts || {};
       const setFields = {};
       const spreadOnlyMode = isSpreadOnlyProject(freshProject);
@@ -175,6 +194,12 @@ router.post('/generate', async (req, res, next) => {
           selectedVariantIndex: 0,
           imageUrl: variants[0].imageUrl,
           prompt: variants[0].prompt,
+          sceneCharacters: variants[0].sceneCharacters || [],
+          poseSelection: variants[0].poseSelection || [],
+          momentTitle: variants[0].momentTitle || '',
+          illustrationHint: variants[0].illustrationHint || '',
+          sceneEnvironment: variants[0].sceneEnvironment || '',
+          timeOfDay: variants[0].timeOfDay || '',
           createdAt: new Date().toISOString(),
         };
         setFields['artifacts.spreadIllustrations'] = ills;
@@ -185,8 +210,8 @@ router.post('/generate', async (req, res, next) => {
           spreads: [],
           selectedVariantIndex: 0,
         };
-        const illSpreads = normArr(illCh.spreads);
 
+        const illSpreads = normArr(illCh.spreads);
         illSpreads[si] = {
           ...(illSpreads[si] || {}),
           spreadIndex: si,
@@ -194,6 +219,12 @@ router.post('/generate', async (req, res, next) => {
           selectedVariantIndex: 0,
           imageUrl: variants[0].imageUrl,
           prompt: variants[0].prompt,
+          sceneCharacters: variants[0].sceneCharacters || [],
+          poseSelection: variants[0].poseSelection || [],
+          momentTitle: variants[0].momentTitle || '',
+          illustrationHint: variants[0].illustrationHint || '',
+          sceneEnvironment: variants[0].sceneEnvironment || '',
+          timeOfDay: variants[0].timeOfDay || '',
           createdAt: new Date().toISOString(),
         };
 
@@ -210,9 +241,10 @@ router.post('/generate', async (req, res, next) => {
         imageUrl: variants[0].imageUrl,
         provider: variants[0].provider,
       };
+    }
 
     // ── STEP 3: CHARACTER STYLE ──────────────────────────────────────────────
-    } else if (task === 'character-style') {
+    else if (task === 'character-style') {
       const { characterId, selectedStyle } = req.body;
 
       if (!characterId) {
@@ -257,9 +289,10 @@ router.post('/generate', async (req, res, next) => {
         });
         result.masterReferenceUrl = result.imageUrl;
       }
+    }
 
     // ── SINGLE IMAGE TASKS ───────────────────────────────────────────────────
-    } else {
+    else {
       totalCost = STAGE_CREDIT_COSTS.illustration ?? 4;
 
       if (req.user.credits < totalCost) {
@@ -317,11 +350,14 @@ router.post('/generate', async (req, res, next) => {
   }
 });
 
-// ─── GET /api/ai/image/cost-estimate ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/ai/image/cost-estimate
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.get('/cost-estimate', async (req, res, next) => {
   try {
     const { projectId, task, variantCount = 1 } = req.query;
+
     if (!projectId || !task) {
       throw new ValidationError('projectId and task required');
     }
@@ -337,12 +373,12 @@ router.get('/cost-estimate', async (req, res, next) => {
         ? countSpreadsToBill(project)
         : countChapterIllustrationsToBill(project);
 
-      estimate = Math.max(toGen * 4, 4);
-      breakdown = [{ label: `${toGen} images × 4 credits`, cost: estimate }];
+      estimate = Math.max(toGen * (STAGE_CREDIT_COSTS.illustration ?? 4), STAGE_CREDIT_COSTS.illustration ?? 4);
+      breakdown = [{ label: `${toGen} images × ${STAGE_CREDIT_COSTS.illustration ?? 4} credits`, cost: estimate }];
     } else if (task === 'illustration-variants') {
       const vc = Math.min(parseInt(variantCount, 10) || 1, 5);
-      estimate = vc * 4;
-      breakdown = [{ label: `${vc} variants × 4 credits per variant`, cost: estimate }];
+      estimate = vc * (STAGE_CREDIT_COSTS.illustration ?? 4);
+      breakdown = [{ label: `${vc} variants × ${STAGE_CREDIT_COSTS.illustration ?? 4} credits per variant`, cost: estimate }];
     } else {
       estimate = STAGE_CREDIT_COSTS.illustration ?? 4;
       breakdown = [{ label: `1 image (${task})`, cost: estimate }];
