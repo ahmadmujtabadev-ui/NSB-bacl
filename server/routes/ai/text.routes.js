@@ -1,171 +1,252 @@
+// server/routes/ai/text.routes.js
+// PRODUCTION-READY — story, spread planning, outline, chapter generation, spreads, humanize, reruns
+
 import { Router } from 'express';
 import { generateText } from '../../services/ai/text/text.providers.js';
-import { generateStageText } from '../../services/ai/text/text.service.js';
+import { generateStageText, getAgeProfile } from '../../services/ai/text/text.service.js';
 import { AI_TOKEN_BUDGETS, estimateTokens } from '../../services/ai/policies/tokenBudget.js';
-import { requireCredits, deductCredits } from '../../middleware/credits.js';
+import { deductCredits } from '../../middleware/credits.js';
 import { logAIUsage } from '../../services/ai/ai.telemetry.js';
 import { STAGE_CREDIT_COSTS } from '../../services/ai/ai.billing.js';
-import { ValidationError } from '../../errors.js';
+import { ValidationError, NotFoundError } from '../../errors.js';
 import { Project } from '../../models/Project.js';
 
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/ai/generate
-// Server-side context builder — recommended for all production use.
-// Fetches Universe + Characters + KnowledgeBase from MongoDB, builds prompts,
-// calls AI, and saves artifacts atomically.
+// POST /api/ai/text/generate
 // ─────────────────────────────────────────────────────────────────────────────
-// router.post('/generate', async (req, res, next) => {
-//   const { stage, projectId, chapterIndex = 0 } = req.body;
-
-//   if (!stage || !projectId) {
-//     return next(new ValidationError('stage and projectId are required'));
-//   }
-
-//   const cost = STAGE_CREDIT_COSTS[stage] ?? 1;
-//   if (req.user.credits < cost) {
-//     return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits, have ${req.user.credits}` } });
-//   }
-
-//   const start = Date.now();
-//   try {
-//     const { result, usage, provider } = await generateStageText({
-//       stage, projectId, userId: req.user._id.toString(), chapterIndex: parseInt(chapterIndex, 10),
-//     });
-
-//     await deductCredits(req.user._id, cost, `AI Stage: ${stage}`, 'project', projectId);
-
-//     logAIUsage({
-//       userId: req.user._id, projectId, provider, stage,
-//       requestType: 'text',
-//       tokensIn:  usage?.inputTokens,
-//       tokensOut: usage?.outputTokens,
-//       creditsCharged: cost,
-//       success: true,
-//       durationMs: Date.now() - start,
-//     });
-
-//     res.json({ result, usage, provider, creditsCharged: cost });
-//   } catch (err) {
-//     logAIUsage({
-//       userId: req.user._id, projectId, provider: 'unknown', stage,
-//       requestType: 'text', creditsCharged: 0, success: false,
-//       errorCode: err.code || 'GENERATE_FAILED',
-//     });
-//     next(err);
-//   }
-// });
 
 router.post('/generate', async (req, res, next) => {
-  // FIX 2: spreadRerun gets spreadIndex too
-  const { stage, projectId, chapterIndex, spreadIndex, customPrompt } = req.body;
+  const {
+    stage,
+    projectId,
+    chapterIndex,
+    spreadIndex,
+    customPrompt,
+    storyIdea,
+  } = req.body;
 
-  if (!stage || !projectId) return next(new ValidationError('stage and projectId are required'));
+  if (!stage) return next(new ValidationError('stage is required'));
+  if (!projectId) return next(new ValidationError('projectId is required'));
+
+  const start = Date.now();
 
   try {
     const project = await Project.findOne({ _id: projectId, userId: req.user._id });
-    if (!project) return next(new NotFoundError('Project not found'));
+    if (!project) throw new NotFoundError('Project not found');
 
-    let result, usage, provider, totalCredits = 0;
+    let result;
+    let usage;
+    let provider;
+    let totalCredits = 0;
 
-    const charge = async (stageName, count = 1) => {
+    const charge = (stageName, count = 1) => {
       const cost = (STAGE_CREDIT_COSTS[stageName] ?? 1) * count;
-      if (req.user.credits < totalCredits + cost)
-        throw new ValidationError(`Need ${totalCredits + cost} credits, have ${req.user.credits}`);
+      const required = totalCredits + cost;
+
+      if (req.user.credits < required) {
+        throw Object.assign(
+          new ValidationError(`Insufficient credits. Need ${required}, have ${req.user.credits}`),
+          { code: 'INSUFFICIENT_CREDITS', required, available: req.user.credits }
+        );
+      }
+
       totalCredits += cost;
     };
 
-    if (stage === 'outline') {
-      await charge('outline');
-      const r = await generateStageText({ stage: 'outline', projectId, userId: req.user._id.toString() });
+    if (stage === 'story') {
+      if (!storyIdea && !project.artifacts?.storyIdea && !project.title) {
+        throw new ValidationError('storyIdea is required for story generation');
+      }
+
+      charge('story', 1);
+      const r = await generateStageText({
+        stage: 'story',
+        projectId,
+        userId: req.user._id.toString(),
+        storyIdea: storyIdea || project.artifacts?.storyIdea,
+      });
+      ({ result, usage, provider } = r);
+
+    } else if (stage === 'spreadPlanning') {
+      const hasStoryContent =
+        project.artifacts?.storyText ||
+        project.artifacts?.outline?.synopsis ||
+        project.artifacts?.storyIdea ||
+        project.title;
+
+      if (!hasStoryContent) {
+        throw new ValidationError('Generate story (Step 1) before spread planning');
+      }
+
+      charge('spreadPlanning', 1);
+      const r = await generateStageText({
+        stage: 'spreadPlanning',
+        projectId,
+        userId: req.user._id.toString(),
+      });
+      ({ result, usage, provider } = r);
+
+    } else if (stage === 'outline') {
+      charge('outline', 1);
+      const r = await generateStageText({
+        stage: 'outline',
+        projectId,
+        userId: req.user._id.toString(),
+      });
       ({ result, usage, provider } = r);
 
     } else if (stage === 'dedication') {
-      await charge('dedication');
-      const r = await ({ stage: 'dedication', projectId, userId: req.user._id.toString() });
+      charge('dedication', 1);
+      const r = await generateStageText({
+        stage: 'dedication',
+        projectId,
+        userId: req.user._id.toString(),
+      });
       ({ result, usage, provider } = r);
 
     } else if (stage === 'theme') {
-      await charge('theme');
-      const r = await generateStageText({ stage: 'theme', projectId, userId: req.user._id.toString() });
+      charge('theme', 1);
+      const r = await generateStageText({
+        stage: 'theme',
+        projectId,
+        userId: req.user._id.toString(),
+      });
       ({ result, usage, provider } = r);
 
     } else if (stage === 'chapters') {
-      // FIX 1: For age < 6, run 'spreads' instead of chapter loop
-      const ageFirst = String(project.ageRange || '').match(/\d+/)?.[0];
-      const isSpreadOnly = ageFirst ? Number(ageFirst) < 6 : false;
+      const chProfile = getAgeProfile(project.ageRange);
 
-      if (isSpreadOnly) {
-        // Generate all spreads in one call
-        await charge('chapters', 1);
-        const r = await generateStageText({ stage: 'spreads', projectId, userId: req.user._id.toString() });
+      if (chProfile.mode === 'spreads-only') {
+        // Under 6 => no chapters, spreads only
+        charge('chapters', 1);
+        const r = await generateStageText({
+          stage: 'spreads',
+          projectId,
+          userId: req.user._id.toString(),
+        });
         ({ result, usage, provider } = r);
+
       } else {
-        const outline = project.artifacts?.outline;
-        const chapterCount = outline?.chapters?.length || project.chapterCount || 4;
-        await charge('chapters', chapterCount);
+        // 6–8 => picture-book chapters
+        // 9+  => prose chapters
+        const outlineChapters = project.artifacts?.outline?.chapters;
+        const chapterCount =
+          (Array.isArray(outlineChapters) ? outlineChapters.length : 0) ||
+          Number(project.chapterCount) ||
+          (chProfile.mode === 'chapter-book' ? 4 : 3);
+
+        charge('chapters', chapterCount);
+
         const results = [];
-        let totalIn = 0, totalOut = 0, lastProv = 'unknown';
+        let totalIn = 0;
+        let totalOut = 0;
+        let lastProv = 'unknown';
+
         for (let i = 0; i < chapterCount; i++) {
-          const r = await generateStageText({ stage: 'chapter', projectId, userId: req.user._id.toString(), chapterIndex: i });
+          const r = await generateStageText({
+            stage: 'chapter',
+            projectId,
+            userId: req.user._id.toString(),
+            chapterIndex: i,
+          });
+
           results.push(r.result);
           totalIn += r.usage?.inputTokens || 0;
           totalOut += r.usage?.outputTokens || 0;
           lastProv = r.provider || lastProv;
         }
-        result = results;
-        usage = { inputTokens: totalIn, outputTokens: totalOut };
-        provider = lastProv;
-      }
 
-    } else if (stage === 'humanize') {
-      const chapters = Array.isArray(project.artifacts?.chapters) ? project.artifacts.chapters : [];
-      const spreads = Array.isArray(project.artifacts?.spreads) ? project.artifacts.spreads : [];
-      const count = chapters.length || spreads.length;
-      if (!count) return next(new ValidationError('Generate chapters/spreads first'));
-
-      // For spreads-only, humanize each spread individually
-      if (project.artifacts?.spreadOnly) {
-        await charge('humanize', 1);
-        const r = await generateStageText({ stage: 'humanize', projectId, userId: req.user._id.toString(), chapterIndex: 0 });
-        ({ result, usage, provider } = r);
-      } else {
-        await charge('humanize', chapters.length);
-        const results = [];
-        let totalIn = 0, totalOut = 0, lastProv = 'unknown';
-        for (let i = 0; i < chapters.length; i++) {
-          const r = await generateStageText({ stage: 'humanize', projectId, userId: req.user._id.toString(), chapterIndex: i });
-          results.push(r.result);
-          totalIn += r.usage?.inputTokens || 0;
-          totalOut += r.usage?.outputTokens || 0;
-          lastProv = r.provider || lastProv;
-        }
         result = results;
         usage = { inputTokens: totalIn, outputTokens: totalOut };
         provider = lastProv;
       }
 
     } else if (stage === 'chapter') {
-      await charge('chapters', 1);
+      const singleProfile = getAgeProfile(project.ageRange);
+
+      if (singleProfile.mode === 'spreads-only') {
+        throw new ValidationError('Single chapter generation is not supported for books under age 6. Use spreads instead.');
+      }
+
+      charge('chapters', 1);
       const r = await generateStageText({
-        stage: 'chapter', projectId, userId: req.user._id.toString(),
+        stage: 'chapter',
+        projectId,
+        userId: req.user._id.toString(),
         chapterIndex: parseInt(chapterIndex ?? 0, 10),
       });
       ({ result, usage, provider } = r);
 
-      // FIX 1: Explicit spreads stage (age < 6)
     } else if (stage === 'spreads') {
-      await charge('chapters', 1);
-      const r = await generateStageText({ stage: 'spreads', projectId, userId: req.user._id.toString() });
+      charge('chapters', 1);
+      const r = await generateStageText({
+        stage: 'spreads',
+        projectId,
+        userId: req.user._id.toString(),
+      });
       ({ result, usage, provider } = r);
 
-      // FIX 2: Single spread rerun with custom prompt
+    } else if (stage === 'humanize') {
+      const arts = project.artifacts || {};
+      const chapters = Array.isArray(arts.chapters) ? arts.chapters : [];
+      const spreads = Array.isArray(arts.spreads) ? arts.spreads : [];
+
+      if (!chapters.length && !spreads.length) {
+        throw new ValidationError('Generate chapters or spreads before humanizing');
+      }
+
+      if (arts.spreadOnly) {
+        charge('humanize', 1);
+        const r = await generateStageText({
+          stage: 'humanize',
+          projectId,
+          userId: req.user._id.toString(),
+          chapterIndex: 0,
+        });
+        ({ result, usage, provider } = r);
+      } else {
+        charge('humanize', chapters.length);
+
+        const results = [];
+        let totalIn = 0;
+        let totalOut = 0;
+        let lastProv = 'unknown';
+
+        for (let i = 0; i < chapters.length; i++) {
+          const r = await generateStageText({
+            stage: 'humanize',
+            projectId,
+            userId: req.user._id.toString(),
+            chapterIndex: i,
+          });
+
+          results.push(r.result);
+          totalIn += r.usage?.inputTokens || 0;
+          totalOut += r.usage?.outputTokens || 0;
+          lastProv = r.provider || lastProv;
+        }
+
+        result = results;
+        usage = { inputTokens: totalIn, outputTokens: totalOut };
+        provider = lastProv;
+      }
+
     } else if (stage === 'spreadRerun') {
-      if (!customPrompt) return next(new ValidationError('customPrompt required for spreadRerun'));
-      await charge('chapter', 1);
+      const rerunProfile = getAgeProfile(project.ageRange);
+
+      if (rerunProfile.mode === 'chapter-book') {
+        throw new ValidationError('spreadRerun is not supported for chapter-book prose mode. Re-run the full chapter instead.');
+      }
+
+      if (!customPrompt) throw new ValidationError('customPrompt required for spreadRerun');
+
+      charge('chapter', 1);
       const r = await generateStageText({
-        stage: 'spreadRerun', projectId, userId: req.user._id.toString(),
+        stage: 'spreadRerun',
+        projectId,
+        userId: req.user._id.toString(),
         chapterIndex: parseInt(chapterIndex ?? 0, 10),
         spreadIndex: parseInt(spreadIndex ?? 0, 10),
         customPrompt,
@@ -173,243 +254,67 @@ router.post('/generate', async (req, res, next) => {
       ({ result, usage, provider } = r);
 
     } else {
-      return next(new ValidationError(`Unsupported stage: ${stage}`));
+      throw new ValidationError('Unsupported stage: "story, spreadPlanning, outline, dedication, theme, chapters, chapter, spreads, humanize, spreadRerun"');
     }
 
-    await deductCredits(req.user._id, totalCredits, `AI Stage: ${stage}`, 'project', projectId);
+    await deductCredits(req.user._id, totalCredits, `AI Text: ${stage}`, 'project', projectId);
+
     logAIUsage({
-      userId: req.user._id, projectId, provider, stage, requestType: 'text',
-      tokensIn: usage?.inputTokens, tokensOut: usage?.outputTokens, creditsCharged: totalCredits, success: true
+      userId: req.user._id,
+      projectId,
+      provider,
+      stage,
+      requestType: 'text',
+      tokensIn: usage?.inputTokens,
+      tokensOut: usage?.outputTokens,
+      creditsCharged: totalCredits,
+      success: true,
+      durationMs: Date.now() - start,
     });
 
-    res.json({ result, usage, provider, creditsCharged: totalCredits });
+    res.json({ result, usage, provider, creditsCharged: totalCredits, stage });
 
   } catch (err) {
+    if (err.code === 'INSUFFICIENT_CREDITS') {
+      return res.status(402).json({
+        error: {
+          code: 'INSUFFICIENT_CREDITS',
+          message: err.message,
+          required: err.required,
+          available: err.available,
+        },
+      });
+    }
+
     logAIUsage({
-      userId: req.user._id, projectId, provider: 'unknown', stage: req.body.stage,
-      requestType: 'text', creditsCharged: 0, success: false, errorCode: err.code || 'GENERATE_FAILED'
+      userId: req.user._id,
+      projectId,
+      provider: 'unknown',
+      stage: req.body.stage,
+      requestType: 'text',
+      creditsCharged: 0,
+      success: false,
+      errorCode: err.code || 'GENERATE_FAILED',
+      durationMs: Date.now() - start,
     });
+
     next(err);
   }
 });
 
-// router.post('/generate', async (req, res, next) => {
-//   const { stage, projectId, chapterIndex } = req.body;
-
-//   if (!stage || !projectId) {
-//     return next(new ValidationError('stage and projectId are required'));
-//   }
-
-//   try {
-//     const project = await Project.findOne({ _id: projectId, userId: req.user._id });
-//     if (!project) {
-//       return next(new NotFoundError('Project not found'));
-//     }
-
-//     let result;
-//     let usage;
-//     let provider;
-//     let totalCredits = 0;
-
-//     const chargeStage = async (stageName, count = 1) => {
-//       const singleCost = STAGE_CREDIT_COSTS[stageName] ?? 1;
-//       const totalCost = singleCost * count;
-
-//       if (req.user.credits < totalCredits + totalCost) {
-//         throw new ValidationError(
-//           `Insufficient credits. Need ${totalCredits + totalCost}, have ${req.user.credits}`
-//         );
-//       }
-
-//       totalCredits += totalCost;
-//       return singleCost;
-//     };
-
-//     // ── Outline ─────────────────────────────────────────
-//     if (stage === 'outline') {
-//       await chargeStage('outline', 1);
-
-//       const res1 = await generateStageText({
-//         stage: 'outline',
-//         projectId,
-//         userId: req.user._id.toString(),
-//       });
-
-//       result = res1.result;
-//       usage = res1.usage;
-//       provider = res1.provider;
-//     }
-//     // ── Dedication page ───────────────────────────────────────────────────────
-//     else if (stage === 'dedication') {
-//       await chargeStage('dedication', 1);
-
-//       const res1 = await generateStageText({
-//         stage: 'dedication',
-//         projectId,
-//         userId: req.user._id.toString(),
-//       });
-//       result = res1.result;
-//       usage = res1.usage;
-//       provider = res1.provider;
-//     }
-
-//     // ── Theme / Islamic reference page ────────────────────────────────────────
-//     else if (stage === 'theme') {
-//       await chargeStage('theme', 1);
-
-//       const res1 = await generateStageText({
-//         stage: 'theme',
-//         projectId,
-//         userId: req.user._id.toString(),
-//       });
-//       result = res1.result;
-//       usage = res1.usage;
-//       provider = res1.provider;
-//     }
-
-//     // ── Chapters (generate all) ────────────────────────
-//     else if (stage === 'chapters') {
-//       const outline = project.artifacts?.outline;
-//       const chapterCount =
-//         outline?.chapters?.length || project.chapterCount || 4;
-
-//       await chargeStage('chapters', chapterCount);
-
-//       const results = [];
-//       let totalInputTokens = 0;
-//       let totalOutputTokens = 0;
-//       let lastProvider = 'unknown';
-
-//       for (let i = 0; i < chapterCount; i++) {
-//         const res1 = await generateStageText({
-//           stage: 'chapter',
-//           projectId,
-//           userId: req.user._id.toString(),
-//           chapterIndex: i,
-//         });
-
-//         results.push(res1.result);
-//         totalInputTokens += res1.usage?.inputTokens || 0;
-//         totalOutputTokens += res1.usage?.outputTokens || 0;
-//         lastProvider = res1.provider || lastProvider;
-//       }
-
-//       result = results;
-//       usage = {
-//         inputTokens: totalInputTokens,
-//         outputTokens: totalOutputTokens,
-//       };
-//       provider = lastProvider;
-//     }
-
-//     // ── Humanize (generate all) ────────────────────────
-//     else if (stage === 'humanize') {
-//       const chapters = Array.isArray(project.artifacts?.chapters)
-//         ? project.artifacts.chapters
-//         : [];
-
-//       if (!chapters.length) {
-//         return next(new ValidationError('Generate chapters first'));
-//       }
-
-//       await chargeStage('humanize', chapters.length);
-
-//       const results = [];
-//       let totalInputTokens = 0;
-//       let totalOutputTokens = 0;
-//       let lastProvider = 'unknown';
-
-//       for (let i = 0; i < chapters.length; i++) {
-//         const res1 = await generateStageText({
-//           stage: 'humanize',
-//           projectId,
-//           userId: req.user._id.toString(),
-//           chapterIndex: i,
-//         });
-
-//         results.push(res1.result);
-//         totalInputTokens += res1.usage?.inputTokens || 0;
-//         totalOutputTokens += res1.usage?.outputTokens || 0;
-//         lastProvider = res1.provider || lastProvider;
-//       }
-
-//       result = results;
-//       usage = {
-//         inputTokens: totalInputTokens,
-//         outputTokens: totalOutputTokens,
-//       };
-//       provider = lastProvider;
-//     }
-
-//     // ── Single chapter/manual rerun support ────────────
-//     else if (stage === 'chapter') {
-//       await chargeStage('chapters', 1);
-
-//       const res1 = await generateStageText({
-//         stage: 'chapter',
-//         projectId,
-//         userId: req.user._id.toString(),
-//         chapterIndex: parseInt(chapterIndex ?? 0, 10),
-//       });
-
-//       result = res1.result;
-//       usage = res1.usage;
-//       provider = res1.provider;
-//     }
-
-//     else {
-//       return next(new ValidationError(`Unsupported stage: ${stage}`));
-//     }
-
-//     await deductCredits(
-//       req.user._id,
-//       totalCredits,
-//       `AI Stage: ${stage}`,
-//       'project',
-//       projectId
-//     );
-
-//     logAIUsage({
-//       userId: req.user._id,
-//       projectId,
-//       provider,
-//       stage,
-//       requestType: 'text',
-//       tokensIn: usage?.inputTokens,
-//       tokensOut: usage?.outputTokens,
-//       creditsCharged: totalCredits,
-//       success: true,
-//       durationMs: 0,
-//     });
-
-//     res.json({
-//       result,
-//       usage,
-//       provider,
-//       creditsCharged: totalCredits,
-//     });
-//   } catch (err) {
-//     logAIUsage({
-//       userId: req.user._id,
-//       projectId,
-//       provider: 'unknown',
-//       stage,
-//       requestType: 'text',
-//       creditsCharged: 0,
-//       success: false,
-//       errorCode: err.code || 'GENERATE_FAILED',
-//     });
-//     next(err);
-//   }
-// });
-
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/ai/text
-// Raw text endpoint — caller supplies system + prompt.
-// Used by advanced flows or direct integrations.
+// POST /api/ai/text/raw
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/text', async (req, res, next) => {
-  const { system, prompt, maxOutputTokens, stage = 'outline', projectId, attemptId } = req.body;
+
+router.post('/raw', async (req, res, next) => {
+  const {
+    system,
+    prompt,
+    maxOutputTokens,
+    stage = 'outline',
+    projectId,
+    attemptId,
+  } = req.body;
 
   if (!prompt || !system) return next(new ValidationError('prompt and system are required'));
 
@@ -418,7 +323,10 @@ router.post('/text', async (req, res, next) => {
 
   if (budget && promptTokens > budget.maxPromptTokens) {
     return res.status(400).json({
-      error: { code: 'AI_TOKEN_BUDGET_EXCEEDED', message: `Prompt too large for ${stage}: ${promptTokens} > ${budget.maxPromptTokens} tokens` },
+      error: {
+        code: 'AI_TOKEN_BUDGET_EXCEEDED',
+        message: `Prompt too large for ${stage}: ${promptTokens} > ${budget.maxPromptTokens} tokens`,
+      },
     });
   }
 
@@ -426,17 +334,26 @@ router.post('/text', async (req, res, next) => {
   const cost = STAGE_CREDIT_COSTS[stage] ?? 1;
 
   if (req.user.credits < cost) {
-    return res.status(402).json({ error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${cost} credits` } });
+    return res.status(402).json({
+      error: {
+        code: 'INSUFFICIENT_CREDITS',
+        message: `Need ${cost} credits, have ${req.user.credits}`,
+      },
+    });
   }
 
   const start = Date.now();
+
   try {
     const aiRes = await generateText({ system, prompt, maxOutputTokens: maxOut, stage });
 
-    await deductCredits(req.user._id, cost, `AI Text: ${stage}`, 'project', projectId);
+    await deductCredits(req.user._id, cost, `AI Text Raw: ${stage}`, 'project', projectId);
 
     logAIUsage({
-      userId: req.user._id, projectId, provider: aiRes.provider, stage,
+      userId: req.user._id,
+      projectId,
+      provider: aiRes.provider,
+      stage,
       requestType: 'text',
       tokensIn: aiRes.usage?.inputTokens || promptTokens,
       tokensOut: aiRes.usage?.outputTokens,
@@ -449,11 +366,17 @@ router.post('/text', async (req, res, next) => {
     res.json(aiRes);
   } catch (err) {
     logAIUsage({
-      userId: req.user._id, projectId, provider: 'unknown', stage,
-      requestType: 'text', creditsCharged: 0, success: false,
+      userId: req.user._id,
+      projectId,
+      provider: 'unknown',
+      stage,
+      requestType: 'text',
+      creditsCharged: 0,
+      success: false,
       errorCode: err.code || 'TEXT_GENERATION_FAILED',
       metadata: { attemptId },
     });
+
     next(err);
   }
 });

@@ -1,65 +1,108 @@
 // server/services/ai/image/image.service.js
-// FIXES APPLIED:
-// FIX 1:  isSpreadOnlyProject() — age-first detection (isPictureBook first, then flag, then spreads array)
-//         used consistently everywhere instead of bare artifacts.spreadOnly flag check
-// FIX 2:  buildSpreadPrompt spreadLabel is always "Spread N of M" — never "Chapter X Spread Y"
-// FIX 3:  negative_prompt injected into every generateImage() call to suppress borders/frames
-// FIX 4:  Wrong scene — spread.text fallback now derives from chapter prose, not keyScene
-// FIX 5:  Outfit color parsed from outfitRules string when outfitColor field is empty
-// FIX 6:  character.poseSheetUrl / imageUrl used as firstIdentityRef from spread 1 (no null anchor)
-// FIX 7:  generateBookIllustrations uses isSpreadOnlyProject() not bare flag (matches route)
-// FIX 8:  saveSpreadIllustration replaced with inline Project usage (no require() in ESM)
-// FIX 9:  All chapter-based labels removed from spread-only path
 
-import { Project }   from '../../../models/Project.js';
-import { Universe }  from '../../../models/Universe.js';
+import { Project } from '../../../models/Project.js';
+import { Universe } from '../../../models/Universe.js';
 import { Character } from '../../../models/Character.js';
 import { NotFoundError } from '../../../errors.js';
-import { generateImage }  from './image.providers.js';
+import { generateImage } from './image.providers.js';
 
-// ─── Negative prompt (injected into every image call) ─────────────────────────
-// FIX 3: Forces provider-level suppression of frames/borders
+// ─── Negative prompt ──────────────────────────────────────────────────────────
 
-const NEGATIVE_PROMPT =
-  'border, frame, decorative frame, vignette, watercolor edges, rounded card outline, ' +
-  'scrapbook border, sticker border, painted edges, inner border, outer stroke, ' +
-  'comic panel, multiple panels, storyboard, grid, text, watermark, letter, number, word, ' +
-  'signature, logo, extra characters, background people, crowd, silhouette';
+const BASE_NEGATIVE_PROMPT = [
+  'border',
+  'frame',
+  'decorative frame',
+  'vignette frame',
+  'scrapbook border',
+  'watercolor edges',
+  'painted edges',
+  'rounded card outline',
+  'inner border',
+  'outer stroke',
+  'comic panel',
+  'multiple panels',
+  'storyboard',
+  'grid layout',
+  'text',
+  'letters',
+  'numbers',
+  'caption',
+  'watermark',
+  'signature',
+  'logo',
+  'brand mark',
+  'extra characters',
+  'background people',
+  'crowd',
+  'silhouette people',
+  'duplicate face',
+  'duplicate child',
+  'extra fingers',
+  'deformed hands',
+  'face distortion',
+  'different outfit',
+  'different age',
+  'different hairstyle',
+  'different hijab color',
+  'different skin tone',
+].join(', ');
 
 // ─── Array helpers ────────────────────────────────────────────────────────────
 
 export function normArr(val) {
   if (!val) return [];
   if (Array.isArray(val)) return [...val];
-  const keys = Object.keys(val).map(Number).filter(n => !Number.isNaN(n));
+  const keys = Object.keys(val).map(Number).filter((n) => !Number.isNaN(n));
   if (!keys.length) return [];
   const arr = [];
-  keys.sort((a, b) => a - b).forEach(k => { arr[k] = val[k]; });
-  return arr.filter(v => v != null);
+  keys.sort((a, b) => a - b).forEach((k) => {
+    arr[k] = val[k];
+  });
+  return arr.filter((v) => v != null);
+}
+
+// ─── Age mode ────────────────────────────────────────────────────────────────
+// < 6   → spreads-only
+// 6-8   → picture-book
+// 9+    → chapter-book
+
+export function getAgeMode(ageRange) {
+  if (!ageRange) return 'picture-book';
+  const nums = String(ageRange).match(/\d+/g) || [];
+  const first = Number(nums[0] || 8);
+  const last = Number(nums[1] || first);
+  const avg = (first + last) / 2;
+
+  if (first <= 5) return 'spreads-only';
+  if (avg <= 8) return 'picture-book';
+  return 'chapter-book';
 }
 
 export function isPictureBook(ageRange) {
-  if (!ageRange) return true;
-  const first = String(ageRange).match(/\d+/)?.[0];
-  return first ? Number(first) <= 8 : true;
+  const mode = getAgeMode(ageRange);
+  return mode === 'picture-book' || mode === 'spreads-only';
+}
+
+export function isChapterBook(ageRange) {
+  return getAgeMode(ageRange) === 'chapter-book';
 }
 
 export function getImagesPerChapter(ageRange) {
-  const first = String(ageRange || '').match(/\d+/)?.[0];
-  const age   = first ? Number(first) : 7;
-  return age <= 6 ? 2 : 1;
+  const mode = getAgeMode(ageRange);
+  if (mode === 'spreads-only') return 1; // per spread page
+  if (mode === 'picture-book') return 2; // more illustrations
+  return 2; // age 9+ max 2 illustrations per chapter
 }
 
 export function getSafeChapterCount(project) {
   const outlineChapters = normArr(project.artifacts?.outline?.chapters);
   const rawCount = outlineChapters.length || Number(project.chapterCount) || 4;
-  return Math.max(4, Math.min(rawCount, 9));
+  const max = isChapterBook(project.ageRange) ? 10 : 8;
+  return Math.max(2, Math.min(rawCount, max));
 }
 
-// FIX 1 & 7: Age-first spread-only detection — single source of truth
-// Age 2-8 = always spread-only regardless of flag
 export function isSpreadOnlyProject(project) {
-  if (isPictureBook(project.ageRange)) return true;
+  if (getAgeMode(project.ageRange) === 'spreads-only') return true;
   if (project.artifacts?.spreadOnly === true) return true;
   if (normArr(project.artifacts?.spreads || []).length > 0) return true;
   return false;
@@ -78,27 +121,27 @@ async function loadUniverseCharacters(project) {
   return [];
 }
 
-// ─── FIX 5: Parse outfit color from outfitRules when outfitColor is missing ───
+// ─── Visual helpers ───────────────────────────────────────────────────────────
 
 const COLOR_WORDS = [
-  'white','cream','beige','ivory','off-white',
-  'black','gray','grey','charcoal',
-  'blue','navy','sky','royal','teal','cyan','aqua',
-  'green','olive','mint','sage','emerald','forest',
-  'red','crimson','maroon','burgundy','rose',
-  'pink','magenta','fuchsia','lilac','lavender',
-  'purple','violet','indigo','plum',
-  'orange','amber','mustard','gold','yellow','lemon',
-  'brown','tan','caramel','chocolate','khaki',
-  'silver','bronze','copper',
+  'white', 'cream', 'beige', 'ivory', 'off-white',
+  'black', 'gray', 'grey', 'charcoal',
+  'blue', 'navy', 'sky', 'royal', 'teal', 'cyan', 'aqua',
+  'green', 'olive', 'mint', 'sage', 'emerald', 'forest',
+  'red', 'crimson', 'maroon', 'burgundy', 'rose',
+  'pink', 'magenta', 'fuchsia', 'lilac', 'lavender',
+  'purple', 'violet', 'indigo', 'plum',
+  'orange', 'amber', 'mustard', 'gold', 'yellow', 'lemon',
+  'brown', 'tan', 'caramel', 'chocolate', 'khaki',
+  'silver', 'bronze', 'copper',
 ];
 
-function extractOutfitColor(vd) {
+function extractOutfitColor(vd = {}) {
   if (vd.outfitColor && vd.outfitColor.trim() && vd.outfitColor !== 'see description') {
     return vd.outfitColor.trim();
   }
   if (vd.primaryColor && vd.primaryColor.trim()) return vd.primaryColor.trim();
-  // Try to parse from outfitRules string
+
   const rules = (vd.outfitRules || '').toLowerCase();
   for (const color of COLOR_WORDS) {
     if (rules.includes(color)) return color;
@@ -106,173 +149,274 @@ function extractOutfitColor(vd) {
   return 'as described in outfit rules';
 }
 
-// ─── Character description ────────────────────────────────────────────────────
+function buildProjectStyleLock(project, universeStyle) {
+  const bs = project.bookStyle || {};
+  return `
+STYLE LOCK — MUST stay consistent across the whole book:
+• Illustration style: ${universeStyle || bs.artStyle || 'pixar-3d'}
+• Color palette: ${bs.colorPalette || 'warm-pastels'}
+• Lighting style: ${bs.lightingStyle || 'warm-golden'}
+• Background style: ${bs.backgroundStyle || 'mixed'}
+• Indoor environment: ${bs.indoorRoomDescription || 'warm cozy room'}
+• Outdoor environment: ${bs.outdoorDescription || 'pleasant natural outdoor scene'}
+• Islamic decor style: ${bs.islamicDecorStyle || 'subtle'}
+• Keep same rendering quality, same character proportions, same visual universe across every image.
+`;
+}
 
 function describeCharacter(c) {
   if (!c) return '';
-  const vd  = c.visualDNA    || {};
+  const vd = c.visualDNA || {};
   const mod = c.modestyRules || {};
+  const outfitColor = extractOutfitColor(vd);
   const gender = mod.hijabAlways
     ? 'GIRL'
-    : (vd.gender?.toUpperCase() || (c.name?.toLowerCase().match(/^(ahmed|omar|ali|hassan|yusuf|ibrahim|adam|zaid|bilal|muhammad|usman)/) ? 'BOY' : 'GIRL'));
-
-  const outfitColor = extractOutfitColor(vd); // FIX 5
+    : (vd.gender?.toUpperCase() ||
+      (c.name?.toLowerCase().match(/^(ahmed|omar|ali|hassan|yusuf|ibrahim|adam|zaid|bilal|muhammad|usman)/)
+        ? 'BOY'
+        : 'GIRL'));
 
   return [
-    `  • ${c.name} [${c.role || 'character'}] — ${gender}, age ${c.ageRange || 'child'}`,
-    `    Skin: ${vd.skinTone || 'N/A'} | Eyes: ${vd.eyeColor || 'N/A'} | Face: ${vd.faceShape || 'N/A'}`,
-    `    Hair/Hijab: ${vd.hairOrHijab || 'N/A'}`,
-    `    ════ LOCKED OUTFIT COLOR — NEVER CHANGE ════`,
-    `    Outfit: ${vd.outfitRules || 'N/A'}`,
-    `    Primary outfit color: ${outfitColor}`,
-    `    ⚑ EXACT outfit and color in EVERY scene — no substitutions ever`,
-    mod.hijabAlways   ? `    ⚑ Hijab: ALWAYS visible` : '',
-    mod.longSleeves   ? `    ⚑ Long sleeves: always` : '',
-    mod.looseClothing ? `    ⚑ Loose clothing: always` : '',
-    `    Personality: ${(c.traits || []).join(', ')}`,
+    `• ${c.name} [${c.role || 'character'}] — ${gender}, age ${c.ageRange || 'child'}`,
+    `  Skin tone: ${vd.skinTone || 'N/A'}`,
+    `  Eye color: ${vd.eyeColor || 'N/A'}`,
+    `  Face shape: ${vd.faceShape || 'N/A'}`,
+    `  Hair / hijab: ${vd.hairOrHijab || 'N/A'}`,
+    `  Outfit rules: ${vd.outfitRules || 'N/A'}`,
+    `  Outfit color lock: ${outfitColor}`,
+    `  Accessories: ${vd.accessories || 'none'}`,
+    `  Palette notes: ${vd.paletteNotes || 'none'}`,
+    mod.hijabAlways ? '  Hijab: ALWAYS visible' : '',
+    mod.longSleeves ? '  Long sleeves: ALWAYS' : '',
+    mod.looseClothing ? '  Loose clothing: ALWAYS' : '',
+    `  Traits: ${(c.traits || []).join(', ') || 'none'}`,
   ].filter(Boolean).join('\n');
 }
 
-// ─── Outfit quick-ref ─────────────────────────────────────────────────────────
-
 function buildOutfitQuickRef(characters) {
   if (!characters?.length) return '';
-  const lines = characters.map(c => {
-    const vd    = c.visualDNA || {};
-    const color = extractOutfitColor(vd); // FIX 5
-    return `  ${c.name}: ALWAYS wears ${vd.outfitRules || 'their standard outfit'} — COLOR: ${color} — NEVER changed`;
+  const lines = characters.map((c) => {
+    const vd = c.visualDNA || {};
+    const color = extractOutfitColor(vd);
+    return `• ${c.name}: ALWAYS wears ${vd.outfitRules || 'their standard modest outfit'} — exact color lock: ${color}`;
   });
-  return `
-⚠ OUTFIT COLOR LOCK (EVERY illustration, no exceptions):
-${lines.join('\n')}
-Colors are FROZEN for the entire book.`;
-}
 
-// ─── Character lock block ─────────────────────────────────────────────────────
+  return `
+OUTFIT LOCK — NEVER CHANGE:
+${lines.join('\n')}
+No redesign. No alternate costume. No random color shift.
+`;
+}
 
 function buildCharacterLockBlock(characters) {
   if (!characters?.length) return '';
-  const approvedNames = characters.map(c => c.name).join(', ');
-  const descriptions  = characters.map(describeCharacter).join('\n\n');
+  const approvedNames = characters.map((c) => c.name).join(', ');
+  const descriptions = characters.map(describeCharacter).join('\n\n');
 
   return `
-╔══════════════════════════════════════════════════════════════╗
-║           UNIVERSE CHARACTERS — ABSOLUTE RULES              ║
-╠══════════════════════════════════════════════════════════════╣
-║ ONLY these characters may appear in this image              ║
-╚══════════════════════════════════════════════════════════════╝
+CHARACTER IDENTITY LOCK — MUST BE FOLLOWED EXACTLY
 
-APPROVED CHARACTERS:
+Approved characters in this scene:
+${approvedNames}
+
+Character details:
 ${descriptions}
 
-══ CHARACTER CONSISTENCY LAWS (ALL must be obeyed) ══════════════
-LAW 1:  ONLY draw characters listed above — ${approvedNames}
-LAW 2:  Do NOT invent, add, or imply ANY new character
-LAW 3:  Do NOT add background people, silhouettes, or crowd
-LAW 4:  Do NOT change gender — ever
-LAW 5:  Face shape, skin tone, eye color IDENTICAL to description
-LAW 6:  Outfit, hair, hijab match EXACTLY — zero variation
-LAW 7:  The reference image shows these characters — match them
-LAW 8:  Only draw characters needed for this scene
-LAW 9:  Hijab MUST be worn if hijabAlways=true
-LAW 10: Islamic children's book — all characters are modest
-LAW 11: OUTFIT COLORS FROZEN — identical in every single image
-LAW 12: Body proportions, height, and build IDENTICAL across all images
-LAW 13: Same age appearance in every image — do NOT make character look older or younger
-LAW 14: Same hairstyle and hair color in every image — no variation
-══════════════════════════════════════════════════════════════`;
+Rules:
+• Use ONLY the approved characters needed for this scene
+• Do NOT invent extra people
+• Do NOT change face shape, age, skin tone, eye color, hairstyle, hijab style, clothing, or body proportions
+• Keep the exact same identity across all images
+• Keep age appearance constant
+• Keep modesty rules constant
+• Keep outfit colors constant
+• Match reference images exactly while only changing pose, angle, expression, and scene action
+`;
 }
-
-// ─── Pose reference ───────────────────────────────────────────────────────────
 
 function buildPoseRefInstruction(characters) {
-  const withSheets = characters.filter(c => c.poseSheetUrl);
-  if (!withSheets.length) return '';
-  const names = withSheets.map(c => c.name).join(', ');
+  const withSheets = characters.filter((c) => c.poseSheetUrl);
+  const withPortraits = characters.filter((c) => c.masterReferenceUrl || c.imageUrl);
+
+  if (!withSheets.length && !withPortraits.length) return '';
+
   return `
-POSE REFERENCE: Pose sheets provided for ${names}.
-Match exact body proportions, face shape, clothing. Use as consistency anchor.`;
+REFERENCE IMAGE RULE:
+• Use attached character pose sheets / portrait references as hard identity anchors
+• Match face, body proportions, clothing, and hijab exactly
+• Scene may change, but character identity must remain visually identical
+`;
 }
 
-// ─── Cross-page anchor ────────────────────────────────────────────────────────
-
-function buildCrossPageAnchor(firstIdentityRef, spreadLabel) {
-  if (!firstIdentityRef) return '';
+function buildCrossPageAnchor(identityRef, label) {
+  if (!identityRef) return '';
   return `
-╔══════════════════════════════════════════════════════════════╗
-║   VISUAL CONSISTENCY — CRITICAL                              ║
-╠══════════════════════════════════════════════════════════════╣
-║ Reference image = MASTER VISUAL ANCHOR for entire book      ║
-╚══════════════════════════════════════════════════════════════╝
-This is ${spreadLabel}.
-MATCH the reference image EXACTLY:
-  • Face shape, skin tone, eye color, hair
-  • Outfit — same garment, same color, same style
-  • Body proportions, height, build
-  • Art style, lighting quality, color temperature
-ONLY the scene/pose/expression changes. Everything else is IDENTICAL.`;
+MASTER CONSISTENCY ANCHOR
+This image is part of "${label}".
+Match the master reference exactly:
+• same face
+• same proportions
+• same outfit
+• same color palette
+• same overall identity
+Only the scene, pose, expression, and camera angle may change.
+`;
 }
-
-// ─── No-border enforcement ────────────────────────────────────────────────────
 
 const NO_BORDER_BLOCK = `
-╔══════════════════════════════════════════════════════════════╗
-║   FRAMING — ABSOLUTE RULES                                   ║
-╚══════════════════════════════════════════════════════════════╝
-• ZERO decorative borders, frames, outlines, or painted edges
-• ZERO scrapbook-style borders or watercolor edge effects
-• ZERO vignette frames, sticker borders, or card outlines
-• Full-bleed illustration filling the ENTIRE canvas edge-to-edge
-• No inner border, no outer stroke, no rounded corner card effect
-• The image IS the full canvas — no frame around it`;
+FRAMING RULES:
+• No borders
+• No frames
+• No card edges
+• No vignette borders
+• No scrapbook styling
+• Full-bleed single illustration only
+`;
 
-const SINGLE_PANEL = `IMPORTANT: Single full-bleed illustration — ONE scene only. NOT a comic strip. NOT multiple panels. One image filling the entire frame.`;
+const SINGLE_PANEL = `
+IMAGE FORMAT:
+• Single full-bleed illustration
+• One scene only
+• Not a comic
+• Not a storyboard
+• Not a multi-panel page
+`;
 
 const CLEAN_BACKGROUND = `
-BACKGROUND:
-  • Clean and simple — do NOT clutter
-  • No ornate arches, no heavy floral arrangements
-  • Soft out-of-focus environment — character is the focus
-  • Allowed: simple sky, soft-focus garden, plain room with 1-2 objects
-  • Background: soft pastels or neutrals — never compete with characters
-  • 60% of background area clean and uncluttered`;
+BACKGROUND RULES:
+• Background should support the story, not overpower the characters
+• No clutter
+• No extra background people
+• Clear readable storytelling composition
+`;
 
 function textSafeZone(textPosition) {
   if (!textPosition) return '';
-  if (textPosition === 'top' || textPosition === 'overlay-top')
-    return 'Keep TOP 20% visually simple — text overlaid there.';
-  if (textPosition === 'bottom' || textPosition === 'overlay-bottom')
-    return 'Keep BOTTOM 20% visually simple — text overlaid there.';
+  if (textPosition === 'top' || textPosition === 'overlay-top') {
+    return 'Keep TOP 20% visually calm for text placement.';
+  }
+  if (textPosition === 'bottom' || textPosition === 'overlay-bottom') {
+    return 'Keep BOTTOM 20% visually calm for text placement.';
+  }
   return '';
 }
 
-// ─── FIX 4: Derive scene text from chapter prose if spread.text is empty ──────
+// ─── Scene character selection ────────────────────────────────────────────────
 
-function deriveSceneText(spread, chapterData, chapterContent_) {
-  // Priority: spread.text → spread.illustrationHint → chapter summary → keyScene
-  if (spread.text?.trim()) return spread.text.trim();
-  if (spread.illustrationHint?.trim()) return spread.illustrationHint.trim();
-  // Try to pull a sentence from chapter prose
-  const prose = chapterContent_?.content || chapterContent_?.text || '';
+function getSceneCharacters(allCharacters, names = []) {
+  const wanted = new Set((names || []).filter(Boolean));
+  if (!wanted.size) return allCharacters;
+  return allCharacters.filter((c) => wanted.has(c.name));
+}
+
+// ─── Chapter moment selection for age 9+ ─────────────────────────────────────
+
+function normalizeIllustrationMoment(moment, idx, chapterData = {}, chapterContent = {}) {
+  if (!moment) {
+    return {
+      momentTitle: `Moment ${idx + 1}`,
+      illustrationHint: chapterData.keyScene || chapterContent.chapterSummary || 'Important emotional chapter moment',
+      charactersInScene: chapterData.charactersInScene || [],
+      sceneEnvironment: 'mixed',
+      timeOfDay: 'day',
+    };
+  }
+
+  if (typeof moment === 'string') {
+    return {
+      momentTitle: `Moment ${idx + 1}`,
+      illustrationHint: moment,
+      charactersInScene: chapterData.charactersInScene || [],
+      sceneEnvironment: 'mixed',
+      timeOfDay: 'day',
+    };
+  }
+
+  return {
+    momentTitle: moment.momentTitle || `Moment ${idx + 1}`,
+    illustrationHint:
+      moment.illustrationHint ||
+      moment.scene ||
+      moment.text ||
+      chapterData.keyScene ||
+      chapterContent.chapterSummary ||
+      'Important emotional chapter moment',
+    charactersInScene:
+      normArr(moment.charactersInScene || []).length
+        ? normArr(moment.charactersInScene)
+        : normArr(chapterData.charactersInScene || []),
+    sceneEnvironment: moment.sceneEnvironment || 'mixed',
+    timeOfDay: moment.timeOfDay || 'day',
+  };
+}
+
+function getChapterIllustrationMoments(chapterData, chapterContent, ageRange) {
+  const maxMoments = getImagesPerChapter(ageRange); // 2 for chapter-book
+
+  const raw =
+    normArr(chapterContent?.illustrationMoments) ||
+    normArr(chapterData?.illustrationMoments) ||
+    [];
+
+  if (raw.length) {
+    return raw.slice(0, maxMoments).map((m, i) =>
+      normalizeIllustrationMoment(m, i, chapterData, chapterContent)
+    );
+  }
+
+  const fallback = [
+    {
+      momentTitle: 'Key scene',
+      illustrationHint: chapterData?.keyScene || chapterContent?.chapterSummary || 'Main turning point',
+      charactersInScene: chapterData?.charactersInScene || [],
+      sceneEnvironment: 'mixed',
+      timeOfDay: 'day',
+    },
+    {
+      momentTitle: 'Ending beat',
+      illustrationHint:
+        chapterData?.endingBeat ||
+        chapterContent?.chapterSummary ||
+        chapterData?.keyScene ||
+        'Meaningful closing chapter moment',
+      charactersInScene: chapterData?.charactersInScene || [],
+      sceneEnvironment: 'mixed',
+      timeOfDay: 'evening',
+    },
+  ];
+
+  return fallback.slice(0, maxMoments).map((m, i) =>
+    normalizeIllustrationMoment(m, i, chapterData, chapterContent)
+  );
+}
+
+// ─── Scene text derivation ────────────────────────────────────────────────────
+
+function deriveSceneText(spread, chapterData, chapterContent) {
+  if (spread?.text?.trim()) return spread.text.trim();
+  if (spread?.illustrationHint?.trim()) return spread.illustrationHint.trim();
+
+  const prose = chapterContent?.chapterText || chapterContent?.content || chapterContent?.text || '';
   if (prose.trim()) {
-    // Take first 2 sentences as scene anchor
     const sentences = prose.match(/[^.!?]+[.!?]+/g) || [];
-    const snippet   = sentences.slice(0, 2).join(' ').trim();
+    const snippet = sentences.slice(0, 2).join(' ').trim();
     if (snippet) return snippet;
   }
-  // Last resort: keyScene (but never use this alone — it produces wrong scenes)
+
+  if (chapterContent?.chapterSummary?.trim()) return chapterContent.chapterSummary.trim();
   if (chapterData?.keyScene?.trim()) return chapterData.keyScene.trim();
+
   return '';
 }
 
-// ─── Spread prompt builder ────────────────────────────────────────────────────
-// FIX 2: spreadLabel is always "Spread N of M" — callers must NOT pass "Chapter X"
+// ─── Prompt builders ──────────────────────────────────────────────────────────
 
 function buildSpreadPrompt({
+  project,
   bookTitle,
   spreadText,
   illustrationHint,
-  spreadLabel,        // MUST be "Spread N of M" — never "Chapter X Spread Y"
+  spreadLabel,
   textPosition,
   ageRange,
   characterLockBlock,
@@ -281,129 +425,233 @@ function buildSpreadPrompt({
   outfitQuickRef,
   crossPageAnchor,
 }) {
-  const first   = String(ageRange || '').match(/\d+/)?.[0];
-  const minAge  = first ? Number(first) : 7;
+  const first = String(ageRange || '').match(/\d+/)?.[0];
+  const minAge = first ? Number(first) : 7;
   const isYoung = minAge <= 6;
+  const styleLock = buildProjectStyleLock(project, universeStyle);
 
   const sceneInstruction = spreadText
-    ? `SCENE TO ILLUSTRATE (MUST match the page text exactly):
-Page text: "${spreadText}"
-Draw exactly what the text describes. The action, characters, and setting must all match this text.
-${illustrationHint ? `Additional context: ${illustrationHint}` : ''}`
-    : (illustrationHint
-        ? `SCENE TO ILLUSTRATE: ${illustrationHint}`
-        : 'SCENE: A warm, child-friendly Islamic story moment.');
+    ? `SCENE TO ILLUSTRATE:
+Text to match exactly: "${spreadText}"
+${illustrationHint ? `Additional scene hint: ${illustrationHint}` : ''}`
+    : illustrationHint
+      ? `SCENE TO ILLUSTRATE: ${illustrationHint}`
+      : 'SCENE: A warm child-friendly Islamic story moment.';
 
   return [
-    `Children's Islamic picture book illustration for "${bookTitle}".`,
-    `Page: ${spreadLabel}.`,   // FIX 2: always "Spread N of M"
+    `Islamic children's book illustration for "${bookTitle}".`,
+    `Page label: ${spreadLabel}.`,
     NO_BORDER_BLOCK,
+    SINGLE_PANEL,
+    CLEAN_BACKGROUND,
+    styleLock,
     outfitQuickRef,
     crossPageAnchor,
     characterLockBlock,
     poseRefBlock,
-    CLEAN_BACKGROUND,
     sceneInstruction,
     isYoung
-      ? 'Very expressive faces, bold simple composition for young children.'
-      : 'Expressive warm storytelling.',
+      ? 'Composition: very clear, warm, expressive, simple, easy for young children to read visually.'
+      : 'Composition: strong storytelling, expressive emotions, clean scene focus.',
     textSafeZone(textPosition),
-    `Art style: ${universeStyle || 'Pixar 3D animation'}, warm golden lighting, vibrant child-friendly colors.`,
-    'ZERO text, letters, numbers, watermarks, or words anywhere in the image.',
-    SINGLE_PANEL,
+    `Render style: ${universeStyle || 'pixar-3d'}.`,
+    'No text, no letters, no numbers, no watermark anywhere.',
   ].filter(Boolean).join('\n\n');
 }
 
-function buildCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef }) {
+function buildCoverPrompt({
+  project,
+  bookTitle,
+  characterLockBlock,
+  poseRefBlock,
+  universeStyle,
+  outfitQuickRef,
+}) {
+  const styleLock = buildProjectStyleLock(project, universeStyle);
+
   return [
-    `Children's Islamic book FRONT COVER for "${bookTitle}".`,
+    `Front cover illustration for Islamic children's book "${bookTitle}".`,
     NO_BORDER_BLOCK,
+    SINGLE_PANEL,
+    CLEAN_BACKGROUND,
+    styleLock,
     outfitQuickRef,
     characterLockBlock,
     poseRefBlock,
-    CLEAN_BACKGROUND,
-    'SCENE: Main character prominently featured in a warm, inviting, cinematic scene.',
-    'Portrait orientation. Full vibrant cover art.',
-    `Art style: ${universeStyle || 'Pixar 3D animation'}, golden cinematic lighting.`,
-    'ZERO text, letters, numbers, titles, author names, or watermarks in the image.',
-    SINGLE_PANEL,
+    'Scene: warm, inviting, memorable hero image with the main character(s) in a visually striking but clean composition.',
+    'Portrait cover composition, full bleed, polished and cinematic.',
+    'No title text, no author text, no watermark, no letters.',
   ].filter(Boolean).join('\n\n');
 }
 
-function buildBackCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef }) {
+function buildBackCoverPrompt({
+  project,
+  bookTitle,
+  characterLockBlock,
+  poseRefBlock,
+  universeStyle,
+  outfitQuickRef,
+}) {
+  const styleLock = buildProjectStyleLock(project, universeStyle);
+
   return [
-    `Children's Islamic book BACK COVER for "${bookTitle}".`,
+    `Back cover illustration for Islamic children's book "${bookTitle}".`,
     NO_BORDER_BLOCK,
+    SINGLE_PANEL,
+    CLEAN_BACKGROUND,
+    styleLock,
     outfitQuickRef,
     characterLockBlock,
     poseRefBlock,
-    CLEAN_BACKGROUND,
-    'SCENE: Main character in a peaceful, happy, concluding moment. Soft and warm.',
-    'Portrait orientation.',
-    `Art style: ${universeStyle || 'Pixar 3D animation'}.`,
-    'ZERO text, letters, numbers, or watermarks in the image.',
-    SINGLE_PANEL,
+    'Scene: peaceful, concluding, calm emotional moment that complements the front cover.',
+    'No text, no barcode, no letters, no watermark.',
   ].filter(Boolean).join('\n\n');
 }
 
 function buildChapterBookIllustrationPrompt({
-  bookTitle, chapterTitle, chapterNumber,
-  chapterIllustrationHint, characterLockBlock, poseRefBlock,
-  universeStyle, outfitQuickRef, crossPageAnchor,
+  project,
+  bookTitle,
+  chapterTitle,
+  chapterNumber,
+  moment,
+  characterLockBlock,
+  poseRefBlock,
+  universeStyle,
+  outfitQuickRef,
+  crossPageAnchor,
 }) {
+  const styleLock = buildProjectStyleLock(project, universeStyle);
+
   return [
-    `Children's Islamic chapter book illustration for "${bookTitle}".`,
+    `Islamic middle-grade chapter book illustration for "${bookTitle}".`,
     `Chapter ${chapterNumber}: "${chapterTitle}".`,
+    `Illustration moment: ${moment.momentTitle}.`,
     NO_BORDER_BLOCK,
+    SINGLE_PANEL,
+    styleLock,
     outfitQuickRef,
     crossPageAnchor,
     characterLockBlock,
     poseRefBlock,
-    CLEAN_BACKGROUND,
-    chapterIllustrationHint
-      ? `SCENE TO ILLUSTRATE: ${chapterIllustrationHint}`
-      : 'SCENE: A warm, meaningful Islamic story moment.',
-    `Art style: ${universeStyle || 'Pixar 3D animation'}.`,
-    'ZERO text, letters, numbers, watermarks, or words anywhere in the image.',
-    SINGLE_PANEL,
+    `
+SCENE TO ILLUSTRATE:
+${moment.illustrationHint}
+
+Scene environment: ${moment.sceneEnvironment || 'mixed'}
+Time of day: ${moment.timeOfDay || 'day'}
+
+This should feel like one of the strongest visual moments of the chapter:
+• emotionally clear
+• cinematic
+• detailed
+• rich atmosphere
+• excellent storytelling composition
+`,
+    'No text, no letters, no numbers, no watermark.',
   ].filter(Boolean).join('\n\n');
 }
 
-// ─── References ───────────────────────────────────────────────────────────────
+function buildCharacterStylePrompt({
+  character,
+  project,
+  selectedStyle,
+  outfitQuickRef,
+}) {
+  const vd = character.visualDNA || {};
+  const mod = character.modestyRules || {};
+  const outfitColor = extractOutfitColor(vd);
+  const styleLock = buildProjectStyleLock(project, selectedStyle);
 
-// FIX 6: Always seed refs with character sheets so spread 1 has an anchor
+  const gender = mod.hijabAlways
+    ? 'girl'
+    : (vd.gender ||
+      (character.name?.toLowerCase().match(/^(ahmed|omar|ali|hassan|yusuf|ibrahim|adam|zaid|bilal|muhammad|usman)/)
+        ? 'boy'
+        : 'girl'));
+
+  return [
+    `MASTER CHARACTER REFERENCE PORTRAIT for "${character.name}".`,
+    NO_BORDER_BLOCK,
+    SINGLE_PANEL,
+    CLEAN_BACKGROUND,
+    styleLock,
+    outfitQuickRef,
+    `
+CHARACTER REFERENCE — MUST DEFINE FUTURE CONSISTENCY:
+• Name: ${character.name}
+• Gender: ${gender}
+• Age appearance: ${character.ageRange || 'child'}
+• Skin tone: ${vd.skinTone || 'warm fair'}
+• Eye color: ${vd.eyeColor || 'dark brown'}
+• Face shape: ${vd.faceShape || 'round youthful face'}
+• Hair or hijab: ${vd.hairOrHijab || 'simple child hairstyle'}
+• Outfit: ${vd.outfitRules || 'simple modest Islamic clothing'}
+• Outfit color lock: ${outfitColor}
+• Accessories: ${vd.accessories || 'none'}
+• Palette notes: ${vd.paletteNotes || 'none'}
+${mod.hijabAlways ? '• Hijab always visible' : ''}
+${mod.longSleeves ? '• Long sleeves always' : ''}
+${mod.looseClothing ? '• Loose modest clothing always' : ''}
+`,
+    `
+PORTRAIT GOAL:
+• full clear character reference
+• strong face visibility
+• strong outfit visibility
+• warm storybook expression
+• clean neutral background
+• child-friendly polished render
+`,
+    'This image will be reused as a hard consistency anchor for all book illustrations.',
+    'No text, no letters, no watermark.',
+  ].filter(Boolean).join('\n\n');
+}
+
+// ─── Reference handling ───────────────────────────────────────────────────────
+
 function buildInitialRefs(characters) {
   const refs = [];
+
+  for (const c of characters) {
+    if (c.masterReferenceUrl?.startsWith('https://')) refs.push(c.masterReferenceUrl);
+  }
   for (const c of characters) {
     if (c.poseSheetUrl?.startsWith('https://')) refs.push(c.poseSheetUrl);
   }
   for (const c of characters) {
-    if (!c.poseSheetUrl && c.imageUrl?.startsWith('https://')) refs.push(c.imageUrl);
+    if (c.imageUrl?.startsWith('https://')) refs.push(c.imageUrl);
   }
+
   return [...new Set(refs)];
 }
 
 function buildReferences(characters, identityRef) {
   const refs = [];
   if (identityRef) refs.push(identityRef);
+
+  for (const c of characters) {
+    if (c.masterReferenceUrl?.startsWith('https://')) refs.push(c.masterReferenceUrl);
+  }
   for (const c of characters) {
     if (c.poseSheetUrl?.startsWith('https://')) refs.push(c.poseSheetUrl);
   }
   for (const c of characters) {
-    if (!c.poseSheetUrl && c.imageUrl?.startsWith('https://')) refs.push(c.imageUrl);
+    if (c.imageUrl?.startsWith('https://')) refs.push(c.imageUrl);
   }
+
   return [...new Set(refs)];
 }
 
 function getMasterAnchorRef(illustrations) {
   const firstChapter = illustrations?.[0];
   if (firstChapter?.spreads?.[0]?.imageUrl) return firstChapter.spreads[0].imageUrl;
-  const idx = firstChapter?.selectedVariantIndex ?? 0;
-  return firstChapter?.variants?.[idx]?.imageUrl || null;
+  return null;
 }
 
-// FIX 6: Get initial identity ref from characters (so spread 1 is not anchorless)
 function getCharacterAnchorRef(characters) {
+  for (const c of characters) {
+    if (c.masterReferenceUrl?.startsWith('https://')) return c.masterReferenceUrl;
+  }
   for (const c of characters) {
     if (c.poseSheetUrl?.startsWith('https://')) return c.poseSheetUrl;
   }
@@ -413,45 +661,43 @@ function getCharacterAnchorRef(characters) {
   return null;
 }
 
-// ─── generateImage wrapper — injects negative_prompt (FIX 3) ─────────────────
+// ─── Provider wrapper ─────────────────────────────────────────────────────────
 
-function generateImageSafe(params) {
+function generateImageSafe(project, params) {
+  const extraNeg = project?.bookStyle?.negativePrompt?.trim();
+  const negative_prompt = extraNeg
+    ? `${BASE_NEGATIVE_PROMPT}, ${extraNeg}`
+    : BASE_NEGATIVE_PROMPT;
+
   return generateImage({
     ...params,
-    negative_prompt: NEGATIVE_PROMPT,
+    negative_prompt,
   });
 }
 
-// ─── Generate full-book illustrations ────────────────────────────────────────
+// ─── Full book illustrations ──────────────────────────────────────────────────
 
 export async function generateBookIllustrations({ projectId, userId, style, seed, traceId }) {
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
 
-  const universe      = project.universeId ? await Universe.findById(project.universeId) : null;
-  const characters    = await loadUniverseCharacters(project);
-  const universeStyle = style || universe?.artStyle || 'pixar-3d';
+  const universe = project.universeId ? await Universe.findById(project.universeId) : null;
+  const allCharacters = await loadUniverseCharacters(project);
+  const universeStyle = style || universe?.artStyle || project.bookStyle?.artStyle || 'pixar-3d';
 
-  const characterLockBlock = buildCharacterLockBlock(characters);
-  const poseRefBlock       = buildPoseRefInstruction(characters);
-  const outfitQuickRef     = buildOutfitQuickRef(characters);
-
-  const bookTitle  = project.artifacts?.outline?.bookTitle || project.title;
+  const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
   let providerUsed = 'unknown';
 
-  // FIX 6: Seed firstIdentityRef from character sheets immediately
   let firstIdentityRef =
     getMasterAnchorRef(normArr(project.artifacts?.illustrations)) ||
     getMasterAnchorRef(normArr(project.artifacts?.spreadIllustrations)) ||
-    getCharacterAnchorRef(characters);
+    getCharacterAnchorRef(allCharacters);
 
-  // FIX 7: Use isSpreadOnlyProject() — age-first, consistent with route
+  // ── Spread-only path (<6) ─────────────────────────────────────────────────
   if (isSpreadOnlyProject(project)) {
-    const allSpreads         = normArr(project.artifacts?.spreads || []);
+    const allSpreads = normArr(project.artifacts?.spreads || []);
     const existingSpreadIlls = normArr(project.artifacts?.spreadIllustrations || []);
-    const totalSpreads       = allSpreads.length;
-
-    console.log(`[image.service] SPREAD-ONLY mode | ${totalSpreads} spreads | anchor: ${firstIdentityRef ? 'YES' : 'NO'}`);
+    const totalSpreads = allSpreads.length;
 
     for (let si = 0; si < totalSpreads; si++) {
       if (existingSpreadIlls[si]?.imageUrl) {
@@ -460,184 +706,257 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       }
 
       const spread = allSpreads[si] || {};
-      const refs   = buildReferences(characters, firstIdentityRef);
+      const sceneCharacters = getSceneCharacters(allCharacters, spread.charactersInScene || []);
+      const refs = buildReferences(sceneCharacters, firstIdentityRef);
 
-      // FIX 2: label is always "Spread N of M" — never "Chapter X"
-      const spreadLabel    = `Spread ${si + 1} of ${totalSpreads}`;
+      const spreadLabel = `Spread ${si + 1} of ${totalSpreads}`;
       const crossPageAnchor = buildCrossPageAnchor(firstIdentityRef, spreadLabel);
-
-      // FIX 4: derive scene text rather than falling back to keyScene
       const spreadText = deriveSceneText(spread, {}, {});
+      const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+      const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+      const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
 
       const prompt = buildSpreadPrompt({
+        project,
         bookTitle,
         spreadText,
         illustrationHint: spread.illustrationHint || '',
         spreadLabel,
-        textPosition:     spread.textPosition || 'bottom',
-        ageRange:         project.ageRange,
-        characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+        textPosition: spread.textPosition || 'bottom',
+        ageRange: project.ageRange,
+        characterLockBlock,
+        poseRefBlock,
+        universeStyle,
+        outfitQuickRef,
+        crossPageAnchor,
       });
 
-      console.log(`[image.service] Spread ${si + 1}/${totalSpreads} | text: "${spreadText?.slice(0, 60)}" | refs: ${refs.length}`);
-
-      // FIX 3: use generateImageSafe (injects negative_prompt)
-      const result = await generateImageSafe({
-        task: 'illustration', prompt, references: refs,
-        style: universeStyle, seed, projectId,
+      const result = await generateImageSafe(project, {
+        task: 'illustration',
+        prompt,
+        references: refs,
+        style: universeStyle,
+        seed,
+        projectId,
         traceId: `${traceId || 'trace'}_s${si}_${Date.now()}`,
       });
+
       providerUsed = result.provider || providerUsed;
 
       existingSpreadIlls[si] = {
-        spreadIndex:      si,
-        imageUrl:         result.imageUrl,
+        spreadIndex: si,
+        imageUrl: result.imageUrl,
         prompt,
-        text:             spreadText,
-        textPosition:     spread.textPosition || 'bottom',
+        text: spreadText,
+        textPosition: spread.textPosition || 'bottom',
         illustrationHint: spread.illustrationHint || '',
-        createdAt:        new Date().toISOString(),
+        createdAt: new Date().toISOString(),
       };
 
       await Project.findByIdAndUpdate(projectId, {
         $set: { 'artifacts.spreadIllustrations': existingSpreadIlls },
       });
 
-      if (!firstIdentityRef && result.imageUrl) {
-        firstIdentityRef = result.imageUrl;
-        console.log(`[image.service] ✓ Master anchor set from Spread 1`);
-      }
+      if (!firstIdentityRef && result.imageUrl) firstIdentityRef = result.imageUrl;
     }
 
-    // Back cover
     if (!project.artifacts?.cover?.backUrl) {
       try {
-        const refs   = buildReferences(characters, firstIdentityRef);
-        const prompt = buildBackCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef });
-        const result = await generateImageSafe({ // FIX 3
-          task: 'back-cover', prompt, references: refs,
-          style: universeStyle, seed, projectId,
+        const refs = buildReferences(allCharacters, firstIdentityRef);
+        const characterLockBlock = buildCharacterLockBlock(allCharacters);
+        const poseRefBlock = buildPoseRefInstruction(allCharacters);
+        const outfitQuickRef = buildOutfitQuickRef(allCharacters);
+
+        const prompt = buildBackCoverPrompt({
+          project,
+          bookTitle,
+          characterLockBlock,
+          poseRefBlock,
+          universeStyle,
+          outfitQuickRef,
+        });
+
+        const result = await generateImageSafe(project, {
+          task: 'back-cover',
+          prompt,
+          references: refs,
+          style: universeStyle,
+          seed,
+          projectId,
           traceId: `trace_backcover_${Date.now()}`,
         });
+
         await Project.findByIdAndUpdate(projectId, {
-          $set: { 'artifacts.cover': { ...(project.artifacts?.cover || {}), backUrl: result.imageUrl, backPrompt: prompt } },
+          $set: {
+            'artifacts.cover': {
+              ...(project.artifacts?.cover || {}),
+              backUrl: result.imageUrl,
+              backPrompt: prompt,
+            },
+          },
         });
+
         providerUsed = result.provider || providerUsed;
       } catch (err) {
         console.error('[image.service] Back cover failed (non-fatal):', err.message);
       }
     }
 
-    return { provider: providerUsed, spreadOnly: true, spreadCount: allSpreads.length };
+    return {
+      provider: providerUsed,
+      spreadOnly: true,
+      spreadCount: allSpreads.length,
+    };
   }
 
-  // ── Chapter-based path (age ≥ 9 chapter books) ───────────────────────────
-  const pictureBook     = isPictureBook(project.ageRange);
+  // ── Chapter-based path (6–8 and 9+) ───────────────────────────────────────
+  const pictureBook = isPictureBook(project.ageRange);
+  const chapterCount = getSafeChapterCount(project);
+
   const outlineChapters = normArr(project.artifacts?.outline?.chapters);
-  const chapterContent  = normArr(
+  const chapterContent = normArr(
     project.artifacts?.humanized?.length
       ? project.artifacts.humanized
       : project.artifacts?.chapters
   );
 
-  const chapterCount  = getSafeChapterCount(project);
-  const illustrations = normArr(project.artifacts?.illustrations);
-
-  console.log(`[image.service] CHAPTER mode | ${pictureBook ? 'picture book' : 'chapter book'} | ${chapterCount} chapters`);
+  const illustrations = normArr(project.artifacts?.illustrations || []);
 
   for (let ci = 0; ci < chapterCount; ci++) {
-    const chapterData     = outlineChapters[ci]    || {};
-    const chapterContent_ = chapterContent[ci]     || {};
-    const chapterTitle    = chapterContent_?.chapterTitle || chapterData?.title || `Chapter ${ci + 1}`;
+    const chapterData = outlineChapters[ci] || {};
+    const chapterContent_ = chapterContent[ci] || {};
+    const chapterTitle =
+      chapterContent_?.chapterTitle ||
+      chapterData?.title ||
+      `Chapter ${ci + 1}`;
 
     const existing = illustrations[ci] || {
-      chapterNumber: ci + 1, variants: [], spreads: [], selectedVariantIndex: 0,
+      chapterNumber: ci + 1,
+      spreads: [],
+      selectedVariantIndex: 0,
     };
-    existing.variants = normArr(existing.variants);
-    existing.spreads  = normArr(existing.spreads);
+
+    existing.spreads = normArr(existing.spreads);
 
     if (pictureBook) {
-      const spreads          = normArr(chapterContent_?.spreads);
+      const spreads = normArr(chapterContent_?.spreads);
       const imagesPerChapter = getImagesPerChapter(project.ageRange);
-      const targetSpreads    = spreads.length > 0
-        ? spreads
-        : Array.from({ length: imagesPerChapter }, (_, i) => ({
-            spreadIndex: i, text: '', illustrationHint: chapterData.keyScene || '', textPosition: 'bottom',
-          }));
+
+      const targetSpreads =
+        spreads.length > 0
+          ? spreads.slice(0, imagesPerChapter)
+          : Array.from({ length: imagesPerChapter }, (_, i) => ({
+              spreadIndex: i,
+              text: '',
+              illustrationHint: chapterData.keyScene || '',
+              textPosition: 'bottom',
+              charactersInScene: chapterData.charactersInScene || [],
+            }));
 
       for (let si = existing.spreads.length; si < targetSpreads.length; si++) {
         const spread = targetSpreads[si] || {};
-        const refs   = buildReferences(characters, firstIdentityRef);
+        const sceneCharacters = getSceneCharacters(allCharacters, spread.charactersInScene || chapterData.charactersInScene || []);
+        const refs = buildReferences(sceneCharacters, firstIdentityRef);
 
-        // FIX 2: label is always "Spread N of M"
         const totalBookSpreads = chapterCount * targetSpreads.length;
-        const globalSpreadIdx  = ci * targetSpreads.length + si;
-        const spreadLabel      = `Spread ${globalSpreadIdx + 1} of ${totalBookSpreads}`;
-        const crossPageAnchor  = firstIdentityRef
-          ? buildCrossPageAnchor(firstIdentityRef, spreadLabel)
-          : '';
+        const globalSpreadIdx = ci * targetSpreads.length + si;
+        const spreadLabel = `Spread ${globalSpreadIdx + 1} of ${totalBookSpreads}`;
 
-        // FIX 4: derive scene from prose
+        const crossPageAnchor = buildCrossPageAnchor(firstIdentityRef, spreadLabel);
         const spreadText = deriveSceneText(spread, chapterData, chapterContent_);
+        const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+        const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+        const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
 
         const prompt = buildSpreadPrompt({
+          project,
           bookTitle,
           spreadText,
           illustrationHint: spread.illustrationHint || chapterData.keyScene || '',
           spreadLabel,
-          textPosition:     spread.textPosition || 'bottom',
-          ageRange:         project.ageRange,
-          characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+          textPosition: spread.textPosition || 'bottom',
+          ageRange: project.ageRange,
+          characterLockBlock,
+          poseRefBlock,
+          universeStyle,
+          outfitQuickRef,
+          crossPageAnchor,
         });
 
-        console.log(`[image.service] ch${ci + 1} spread${si} | text: "${spreadText?.slice(0, 60)}"`);
-
-        // FIX 3
-        const result = await generateImageSafe({
-          task: 'illustration', prompt, references: refs,
-          style: universeStyle, seed, projectId,
+        const result = await generateImageSafe(project, {
+          task: 'illustration',
+          prompt,
+          references: refs,
+          style: universeStyle,
+          seed,
+          projectId,
           traceId: `trace_${Date.now()}_ch${ci}_s${si}_${Math.random().toString(36).slice(2, 8)}`,
         });
+
         providerUsed = result.provider || providerUsed;
 
-        existing.spreads.push({
-          spreadIndex:      si,
-          imageUrl:         result.imageUrl,
+        existing.spreads[si] = {
+          spreadIndex: si,
+          imageUrl: result.imageUrl,
           prompt,
-          seed:             seed || null,
-          text:             spreadText,
-          textPosition:     spread.textPosition || 'bottom',
+          seed: seed || null,
+          text: spreadText,
+          textPosition: spread.textPosition || 'bottom',
           illustrationHint: spread.illustrationHint || '',
-        });
+        };
 
         if (!firstIdentityRef && result.imageUrl) firstIdentityRef = result.imageUrl;
       }
     } else {
-      // Chapter book — 1 illustration per chapter
-      if (existing.variants.length === 0) {
-        const refs = buildReferences(characters, firstIdentityRef);
-        const spreadLabel    = `Chapter ${ci + 1}`;
-        const crossPageAnchor = ci > 0
-          ? buildCrossPageAnchor(firstIdentityRef, spreadLabel)
-          : '';
+      // age 9+ → max 2 best illustration moments per chapter
+      const moments = getChapterIllustrationMoments(chapterData, chapterContent_, project.ageRange);
 
-        const hint = chapterContent_?.chapterIllustrationHint || chapterData.keyScene || '';
+      for (let si = existing.spreads.length; si < moments.length; si++) {
+        const moment = moments[si];
+        const sceneCharacters = getSceneCharacters(allCharacters, moment.charactersInScene || chapterData.charactersInScene || []);
+        const refs = buildReferences(sceneCharacters, firstIdentityRef);
+
+        const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+        const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+        const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
+        const crossPageAnchor = buildCrossPageAnchor(firstIdentityRef, `Chapter ${ci + 1} · Moment ${si + 1}`);
 
         const prompt = buildChapterBookIllustrationPrompt({
-          bookTitle, chapterTitle, chapterNumber: ci + 1,
-          chapterIllustrationHint: hint,
-          characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+          project,
+          bookTitle,
+          chapterTitle,
+          chapterNumber: ci + 1,
+          moment,
+          characterLockBlock,
+          poseRefBlock,
+          universeStyle,
+          outfitQuickRef,
+          crossPageAnchor,
         });
 
-        // FIX 3
-        const result = await generateImageSafe({
-          task: 'illustration', prompt, references: refs,
-          style: universeStyle, seed, projectId,
-          traceId: `trace_${Date.now()}_ch${ci}_${Math.random().toString(36).slice(2, 8)}`,
+        const result = await generateImageSafe(project, {
+          task: 'illustration',
+          prompt,
+          references: refs,
+          style: universeStyle,
+          seed,
+          projectId,
+          traceId: `trace_${Date.now()}_ch${ci}_m${si}_${Math.random().toString(36).slice(2, 8)}`,
         });
+
         providerUsed = result.provider || providerUsed;
 
-        existing.variants.push({ variantIndex: 0, imageUrl: result.imageUrl, prompt, seed: seed || null, selected: true });
+        existing.spreads[si] = {
+          spreadIndex: si,
+          imageUrl: result.imageUrl,
+          prompt,
+          seed: seed || null,
+          illustrationHint: moment.illustrationHint,
+          momentTitle: moment.momentTitle,
+          charactersInScene: moment.charactersInScene || [],
+          sceneEnvironment: moment.sceneEnvironment || 'mixed',
+          timeOfDay: moment.timeOfDay || 'day',
+        };
 
         if (!firstIdentityRef && result.imageUrl) firstIdentityRef = result.imageUrl;
       }
@@ -648,207 +967,339 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
   }
 
   await Project.findByIdAndUpdate(projectId, {
-    $set: { 'artifacts.illustrations': illustrations, currentStage: 'illustrations' },
+    $set: {
+      'artifacts.illustrations': illustrations,
+      currentStage: 'illustrations',
+    },
   });
 
-  // Back cover
   if (!project.artifacts?.cover?.backUrl) {
     try {
-      const refs   = buildReferences(characters, firstIdentityRef);
-      const prompt = buildBackCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef });
-      const result = await generateImageSafe({ // FIX 3
-        task: 'back-cover', prompt, references: refs,
-        style: universeStyle, seed, projectId,
+      const refs = buildReferences(allCharacters, firstIdentityRef);
+      const characterLockBlock = buildCharacterLockBlock(allCharacters);
+      const poseRefBlock = buildPoseRefInstruction(allCharacters);
+      const outfitQuickRef = buildOutfitQuickRef(allCharacters);
+
+      const prompt = buildBackCoverPrompt({
+        project,
+        bookTitle,
+        characterLockBlock,
+        poseRefBlock,
+        universeStyle,
+        outfitQuickRef,
+      });
+
+      const result = await generateImageSafe(project, {
+        task: 'back-cover',
+        prompt,
+        references: refs,
+        style: universeStyle,
+        seed,
+        projectId,
         traceId: `trace_backcover_${Date.now()}`,
       });
+
       await Project.findByIdAndUpdate(projectId, {
-        $set: { 'artifacts.cover': { ...(project.artifacts?.cover || {}), backUrl: result.imageUrl, backPrompt: prompt } },
+        $set: {
+          'artifacts.cover': {
+            ...(project.artifacts?.cover || {}),
+            backUrl: result.imageUrl,
+            backPrompt: prompt,
+          },
+        },
       });
+
       providerUsed = result.provider || providerUsed;
     } catch (err) {
       console.error('[image.service] Back cover failed (non-fatal):', err.message);
     }
   }
 
-  return { provider: providerUsed, illustrations, pictureBook, chapterCount };
+  return {
+    provider: providerUsed,
+    illustrations,
+    pictureBook,
+    chapterCount,
+  };
 }
 
-// ─── Generate single image (rerun / cover) ────────────────────────────────────
+// ─── Single image generation ──────────────────────────────────────────────────
 
 export async function generateStageImage({
-  task, chapterIndex = 0, spreadIndex = 0,
-  projectId, userId, customPrompt, seed, style, traceId,
+  task,
+  chapterIndex = 0,
+  spreadIndex = 0,
+  projectId,
+  userId,
+  customPrompt,
+  seed,
+  style,
+  traceId,
+  characterId,
 }) {
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
 
-  const universe      = project.universeId ? await Universe.findById(project.universeId) : null;
-  const characters    = await loadUniverseCharacters(project);
-  const universeStyle = style || universe?.artStyle || 'pixar-3d';
-
-  const characterLockBlock = buildCharacterLockBlock(characters);
-  const poseRefBlock       = buildPoseRefInstruction(characters);
-  const outfitQuickRef     = buildOutfitQuickRef(characters);
+  const universe = project.universeId ? await Universe.findById(project.universeId) : null;
+  const allCharacters = await loadUniverseCharacters(project);
+  const universeStyle = style || universe?.artStyle || project.bookStyle?.artStyle || 'pixar-3d';
 
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
 
-  // FIX 6: Seed anchor from character sheets first
   const spreadIllustrations = normArr(project.artifacts?.spreadIllustrations || []);
-  const illustrations       = normArr(project.artifacts?.illustrations);
-  const masterAnchorRef     =
+  const illustrations = normArr(project.artifacts?.illustrations || []);
+
+  const masterAnchorRef =
     spreadIllustrations[0]?.imageUrl ||
     getMasterAnchorRef(illustrations) ||
-    getCharacterAnchorRef(characters);
-
-  const refs = buildReferences(characters, masterAnchorRef);
+    getCharacterAnchorRef(allCharacters);
 
   let prompt;
+  let refs = buildReferences(allCharacters, masterAnchorRef);
 
   if (customPrompt) {
-    // FIX 3: always inject no-border block into custom prompts
-    prompt = customPrompt.includes('decorative border') || customPrompt.includes('FRAMING')
+    prompt = customPrompt.includes('FRAMING RULES')
       ? customPrompt
       : `${NO_BORDER_BLOCK}\n\n${customPrompt}`;
-
   } else if (task === 'illustration') {
-    // FIX 7: Use isSpreadOnlyProject() for consistent routing
     if (isSpreadOnlyProject(project)) {
-      const allSpreads  = normArr(project.artifacts?.spreads || []);
+      const allSpreads = normArr(project.artifacts?.spreads || []);
       const totalSpreads = allSpreads.length;
-      const spread      = allSpreads[spreadIndex] || {};
-
-      // FIX 2: always "Spread N of M"
-      const spreadLabel    = `Spread ${spreadIndex + 1} of ${totalSpreads}`;
-      const crossPageAnchor = spreadIndex > 0
-        ? buildCrossPageAnchor(masterAnchorRef, spreadLabel)
-        : '';
-
-      // FIX 4: derive scene from spread text
+      const spread = allSpreads[spreadIndex] || {};
+      const spreadLabel = `Spread ${spreadIndex + 1} of ${totalSpreads}`;
       const spreadText = deriveSceneText(spread, {}, {});
+      const sceneCharacters = getSceneCharacters(allCharacters, spread.charactersInScene || []);
+      const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+      const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+      const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
+      const crossPageAnchor = buildCrossPageAnchor(masterAnchorRef, spreadLabel);
+
+      refs = buildReferences(sceneCharacters, masterAnchorRef);
 
       prompt = buildSpreadPrompt({
+        project,
         bookTitle,
         spreadText,
         illustrationHint: spread.illustrationHint || '',
         spreadLabel,
-        textPosition:     spread.textPosition || 'bottom',
-        ageRange:         project.ageRange,
-        characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+        textPosition: spread.textPosition || 'bottom',
+        ageRange: project.ageRange,
+        characterLockBlock,
+        poseRefBlock,
+        universeStyle,
+        outfitQuickRef,
+        crossPageAnchor,
       });
-
     } else {
-      const pictureBook     = isPictureBook(project.ageRange);
+      const pictureBook = isPictureBook(project.ageRange);
       const outlineChapters = normArr(project.artifacts?.outline?.chapters);
-      const chapterContent  = normArr(
+      const chapterContent = normArr(
         project.artifacts?.humanized?.length
           ? project.artifacts.humanized
           : project.artifacts?.chapters
       );
-      const chapterData     = outlineChapters[chapterIndex]  || {};
-      const chapterContent_ = chapterContent[chapterIndex]   || {};
-      const chapterTitle    = chapterContent_?.chapterTitle  || chapterData?.title || `Chapter ${chapterIndex + 1}`;
+
+      const chapterData = outlineChapters[chapterIndex] || {};
+      const chapterContent_ = chapterContent[chapterIndex] || {};
+      const chapterTitle =
+        chapterContent_?.chapterTitle ||
+        chapterData?.title ||
+        `Chapter ${chapterIndex + 1}`;
 
       if (pictureBook) {
-        const spread = normArr(chapterContent_?.spreads)[spreadIndex] || {};
-
-        // FIX 2: global spread index for "Spread N of M"
-        const chapterCount_   = getSafeChapterCount(project);
-        const spreadsPerChap  = normArr(chapterContent_?.spreads).length || getImagesPerChapter(project.ageRange);
-        const totalSpreads    = chapterCount_ * spreadsPerChap;
-        const globalIdx       = chapterIndex * spreadsPerChap + spreadIndex;
-        const spreadLabel     = `Spread ${globalIdx + 1} of ${totalSpreads}`;
-        const crossPageAnchor = masterAnchorRef
-          ? buildCrossPageAnchor(masterAnchorRef, spreadLabel)
-          : '';
-
-        // FIX 4
+        const chapterSpreads = normArr(chapterContent_?.spreads);
+        const spreadsPerChapter = chapterSpreads.length || getImagesPerChapter(project.ageRange);
+        const totalSpreads = getSafeChapterCount(project) * spreadsPerChapter;
+        const globalIdx = chapterIndex * spreadsPerChapter + spreadIndex;
+        const spreadLabel = `Spread ${globalIdx + 1} of ${totalSpreads}`;
+        const spread = chapterSpreads[spreadIndex] || {};
         const spreadText = deriveSceneText(spread, chapterData, chapterContent_);
+        const sceneCharacters = getSceneCharacters(allCharacters, spread.charactersInScene || chapterData.charactersInScene || []);
+        const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+        const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+        const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
+        const crossPageAnchor = buildCrossPageAnchor(masterAnchorRef, spreadLabel);
+
+        refs = buildReferences(sceneCharacters, masterAnchorRef);
 
         prompt = buildSpreadPrompt({
+          project,
           bookTitle,
           spreadText,
           illustrationHint: spread.illustrationHint || chapterData.keyScene || '',
           spreadLabel,
-          textPosition:     spread.textPosition || 'bottom',
-          ageRange:         project.ageRange,
-          characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+          textPosition: spread.textPosition || 'bottom',
+          ageRange: project.ageRange,
+          characterLockBlock,
+          poseRefBlock,
+          universeStyle,
+          outfitQuickRef,
+          crossPageAnchor,
         });
       } else {
-        const crossPageAnchor = masterAnchorRef
-          ? buildCrossPageAnchor(masterAnchorRef, `Chapter ${chapterIndex + 1}`)
-          : '';
+        const moments = getChapterIllustrationMoments(chapterData, chapterContent_, project.ageRange);
+        const moment = moments[spreadIndex] || moments[0];
+        const sceneCharacters = getSceneCharacters(allCharacters, moment.charactersInScene || chapterData.charactersInScene || []);
+        const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
+        const poseRefBlock = buildPoseRefInstruction(sceneCharacters);
+        const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
+        const crossPageAnchor = buildCrossPageAnchor(
+          masterAnchorRef,
+          `Chapter ${chapterIndex + 1} · Moment ${spreadIndex + 1}`
+        );
+
+        refs = buildReferences(sceneCharacters, masterAnchorRef);
+
         prompt = buildChapterBookIllustrationPrompt({
-          bookTitle, chapterTitle, chapterNumber: chapterIndex + 1,
-          chapterIllustrationHint: chapterContent_?.chapterIllustrationHint || chapterData.keyScene || '',
-          characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef, crossPageAnchor,
+          project,
+          bookTitle,
+          chapterTitle,
+          chapterNumber: chapterIndex + 1,
+          moment,
+          characterLockBlock,
+          poseRefBlock,
+          universeStyle,
+          outfitQuickRef,
+          crossPageAnchor,
         });
       }
     }
   } else if (task === 'cover') {
-    prompt = buildCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef });
+    const characterLockBlock = buildCharacterLockBlock(allCharacters);
+    const poseRefBlock = buildPoseRefInstruction(allCharacters);
+    const outfitQuickRef = buildOutfitQuickRef(allCharacters);
+
+    prompt = buildCoverPrompt({
+      project,
+      bookTitle,
+      characterLockBlock,
+      poseRefBlock,
+      universeStyle,
+      outfitQuickRef,
+    });
   } else if (task === 'back-cover') {
-    prompt = buildBackCoverPrompt({ bookTitle, characterLockBlock, poseRefBlock, universeStyle, outfitQuickRef });
+    const characterLockBlock = buildCharacterLockBlock(allCharacters);
+    const poseRefBlock = buildPoseRefInstruction(allCharacters);
+    const outfitQuickRef = buildOutfitQuickRef(allCharacters);
+
+    prompt = buildBackCoverPrompt({
+      project,
+      bookTitle,
+      characterLockBlock,
+      poseRefBlock,
+      universeStyle,
+      outfitQuickRef,
+    });
+  } else if (task === 'character-style') {
+    let character = null;
+
+    if (characterId) {
+      character = await Character.findById(characterId);
+    } else {
+      character = allCharacters[0] || null;
+    }
+
+    if (!character) {
+      throw Object.assign(new Error('No character found for character-style task'), {
+        code: 'CHARACTER_NOT_FOUND',
+      });
+    }
+
+    refs = buildInitialRefs([character]);
+    const selectedStyle = style || 'pixar-3d';
+    const charOutfitRef = buildOutfitQuickRef([character]);
+
+    prompt = buildCharacterStylePrompt({
+      character,
+      project,
+      selectedStyle,
+      outfitQuickRef: charOutfitRef,
+    });
   } else {
-    prompt = [`Children's Islamic book image for "${bookTitle}".`, NO_BORDER_BLOCK, SINGLE_PANEL].join('\n\n');
+    throw Object.assign(
+      new Error(`Unknown image task: "${task}". Valid tasks: illustration, illustrations, cover, back-cover, character-style`),
+      { code: 'UNKNOWN_TASK' }
+    );
   }
 
   const trId = traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // FIX 3: generateImageSafe injects negative_prompt
-  const result = await generateImageSafe({
-    task, prompt, references: refs, style: universeStyle, seed, projectId, traceId: trId,
+  const result = await generateImageSafe(project, {
+    task: task === 'character-style' ? 'portrait' : task,
+    prompt,
+    references: refs,
+    style: universeStyle,
+    seed,
+    projectId,
+    traceId: trId,
   });
 
-  // ── Save result ──────────────────────────────────────────────────────────────
   const setFields = {};
+
+  if (task === 'character-style') {
+    const targetCharId = characterId || allCharacters[0]?._id;
+    if (targetCharId && result.imageUrl) {
+      await Character.findByIdAndUpdate(targetCharId, {
+        $set: {
+          masterReferenceUrl: result.imageUrl,
+          selectedStyle: style || 'pixar-3d',
+          styleApprovedAt: new Date().toISOString(),
+          status: 'generated',
+        },
+      });
+    }
+    return { ...result, prompt, traceId: trId, masterReferenceUrl: result.imageUrl };
+  }
 
   if (task === 'illustration') {
     if (isSpreadOnlyProject(project)) {
-      // FIX 8: use imported Project directly (no require())
-      const ills        = normArr(project.artifacts?.spreadIllustrations || []);
-      const allSpreads  = normArr(project.artifacts?.spreads || []);
-      const spread      = allSpreads[spreadIndex] || {};
-      const spreadText  = deriveSceneText(spread, {}, {}); // FIX 4
+      const ills = normArr(project.artifacts?.spreadIllustrations || []);
+      const allSpreads = normArr(project.artifacts?.spreads || []);
+      const spread = allSpreads[spreadIndex] || {};
+      const spreadText = deriveSceneText(spread, {}, {});
+
       ills[spreadIndex] = {
         spreadIndex,
-        imageUrl:     result.imageUrl,
+        imageUrl: result.imageUrl,
         prompt,
-        text:         spreadText,
+        text: spreadText,
         textPosition: spread.textPosition || 'bottom',
-        createdAt:    new Date().toISOString(),
+        createdAt: new Date().toISOString(),
       };
+
       setFields['artifacts.spreadIllustrations'] = ills;
     } else {
       const existing = illustrations[chapterIndex] || {
-        chapterNumber: chapterIndex + 1, variants: [], spreads: [], selectedVariantIndex: 0,
+        chapterNumber: chapterIndex + 1,
+        spreads: [],
+        selectedVariantIndex: 0,
       };
-      existing.variants = normArr(existing.variants);
-      existing.spreads  = normArr(existing.spreads);
 
-      if (isPictureBook(project.ageRange)) {
-        const chapterContent_ = normArr(
-          project.artifacts?.humanized?.length ? project.artifacts.humanized : project.artifacts?.chapters
-        )[chapterIndex] || {};
-        const spread     = normArr(chapterContent_?.spreads)[spreadIndex] || {};
-        const spreadText = deriveSceneText(spread, {}, chapterContent_); // FIX 4
-        existing.spreads[spreadIndex] = {
-          spreadIndex, imageUrl: result.imageUrl, prompt, seed: seed || null,
-          text: spreadText, textPosition: spread.textPosition || 'bottom',
-          illustrationHint: spread.illustrationHint || '',
-        };
-      } else {
-        const vi = existing.variants.length;
-        existing.variants.push({ variantIndex: vi, imageUrl: result.imageUrl, prompt, seed: seed || null, selected: vi === 0 });
-        if (!existing.selectedVariantIndex) existing.selectedVariantIndex = 0;
-      }
+      existing.spreads = normArr(existing.spreads);
+      existing.spreads[spreadIndex] = {
+        ...(existing.spreads[spreadIndex] || {}),
+        spreadIndex,
+        imageUrl: result.imageUrl,
+        prompt,
+        seed: seed || null,
+        createdAt: new Date().toISOString(),
+      };
 
       illustrations[chapterIndex] = existing;
       setFields['artifacts.illustrations'] = illustrations;
     }
   } else if (task === 'cover') {
-    setFields['artifacts.cover'] = { ...(project.artifacts?.cover || {}), frontUrl: result.imageUrl, frontPrompt: prompt };
+    setFields['artifacts.cover'] = {
+      ...(project.artifacts?.cover || {}),
+      frontUrl: result.imageUrl,
+      frontPrompt: prompt,
+    };
   } else if (task === 'back-cover') {
-    setFields['artifacts.cover'] = { ...(project.artifacts?.cover || {}), backUrl: result.imageUrl, backPrompt: prompt };
+    setFields['artifacts.cover'] = {
+      ...(project.artifacts?.cover || {}),
+      backUrl: result.imageUrl,
+      backPrompt: prompt,
+    };
   }
 
   if (Object.keys(setFields).length) {
