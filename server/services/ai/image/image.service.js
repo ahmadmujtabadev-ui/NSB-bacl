@@ -981,6 +981,13 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
   let providerUsed = 'unknown';
 
+  // Run this in your DB or add a debug log in generateBookIllustrations:
+  console.log('[DEBUG] Characters:', allCharacters.map(c => ({
+    name: c.name,
+    masterReferenceUrl: c.masterReferenceUrl,
+    imageUrl: c.imageUrl
+  })));
+
   // Important: do not use previously generated scene images as identity anchors.
   // Always use character refs.
   const stableIdentityRefs = buildInitialRefs(allCharacters);
@@ -1160,13 +1167,13 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         spreads.length > 0
           ? spreads.slice(0, imagesPerChapter)
           : Array.from({ length: imagesPerChapter }, (_, i) => ({
-              spreadIndex: i,
-              text: '',
-              illustrationHint: chapterData.keyScene || '',
-              textPosition: 'bottom',
-              charactersInScene: chapterData.charactersInScene || [],
-              poseKey: '',
-            }));
+            spreadIndex: i,
+            text: '',
+            illustrationHint: chapterData.keyScene || '',
+            textPosition: 'bottom',
+            charactersInScene: chapterData.charactersInScene || [],
+            poseKey: '',
+          }));
 
       for (let si = existing.spreads.length; si < targetSpreads.length; si++) {
         const spread = targetSpreads[si] || {};
@@ -1379,6 +1386,30 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
   };
 }
 
+// async function loadUniverseCharacters(project) {
+//   if (!project) return [];
+
+//   if (project.characterIds?.length) {
+//     return Character.find({
+//       _id: { $in: project.characterIds },
+//       status: { $in: ['approved', 'generated'] },
+//     }).sort({ updatedAt: -1 });
+//   }
+
+//   if (project.universeId) {
+//     return Character.find({
+//       universeId: project.universeId,
+//       status: { $in: ['approved', 'generated'] },
+//     }).sort({ updatedAt: -1 });
+//   }
+
+//   // FALLBACK: load all characters belonging to this user
+//   // so projects without explicit links still get character data
+//   return Character.find({
+//     userId: project.userId,
+//     status: { $in: ['approved', 'generated'] },
+//   }).sort({ updatedAt: -1 });
+// }
 // ─────────────────────────────────────────────────────────────────────────────
 // Single image generation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1400,8 +1431,14 @@ export async function generateStageImage({
 
   const universe = project.universeId ? await Universe.findById(project.universeId) : null;
   const allCharacters = await loadUniverseCharacters(project);
+
   const universeStyle = style || universe?.artStyle || project.bookStyle?.artStyle || 'pixar-3d';
 
+  console.log('[generateStageImage] project.characterIds:', project.characterIds);
+  console.log('[generateStageImage] project.universeId:', project.universeId);
+  console.log('[generateStageImage] allCharacters loaded:', allCharacters.length,
+    allCharacters.map(c => ({ name: c.name, masterRef: c.masterReferenceUrl?.slice(0, 50) }))
+  );
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
   const stableIdentityRefs = buildInitialRefs(allCharacters);
 
@@ -1465,10 +1502,17 @@ export async function generateStageImage({
     } else {
       const pictureBook = isPictureBook(project.ageRange);
       const outlineChapters = normArr(project.artifacts?.outline?.chapters);
-      const chapterContent = normArr(
-        project.artifacts?.humanized?.length
-          ? project.artifacts.humanized
-          : project.artifacts?.chapters
+      // const chapterContent = normArr(
+      //   project.artifacts?.humanized?.length
+      //     ? project.artifacts.humanized
+      //     : project.artifacts?.chapters
+      // );
+
+      const humanizedArr2 = normArr(project.artifacts?.humanized || []);
+      const chaptersArr2 = normArr(project.artifacts?.chapters || []);
+      const totalCh2 = Math.max(humanizedArr2.length, chaptersArr2.length);
+      const chapterContent = Array.from({ length: totalCh2 }, (_, i) =>
+        (humanizedArr2[i]?.chapterText ? humanizedArr2[i] : null) ?? chaptersArr2[i] ?? {}
       );
 
       const chapterData = outlineChapters[chapterIndex] || {};

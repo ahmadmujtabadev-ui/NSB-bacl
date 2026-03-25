@@ -1,51 +1,38 @@
 // server/routes/pages.routes.js
 // PRODUCTION-READY — Per-page editing, approval, version history, variants
+// Updated to work cleanly with review-first workflow
 
-import { Router }          from 'express';
-import { Project }         from '../models/Project.js';
+import { Router } from 'express';
+import { Project } from '../models/Project.js';
 import { NotFoundError, ForbiddenError, ValidationError } from '../errors.js';
-import { generateStageText }  from '../services/ai/text/text.service.js';
+import { generateStageText } from '../services/ai/text/text.service.js';
 import { generateStageImage } from '../services/ai/image/image.service.js';
-import { deductCredits }      from '../middleware/credits.js';
+import { deductCredits } from '../middleware/credits.js';
 import { STAGE_CREDIT_COSTS } from '../services/ai/ai.billing.js';
-import { logAIUsage }         from '../services/ai/ai.telemetry.js';
+import { logAIUsage } from '../services/ai/ai.telemetry.js';
 
 const router = Router();
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 function normArr(val) {
   if (!val) return [];
-  if (Array.isArray(val)) return val.filter(Boolean);
-  const keys = Object.keys(val).map(Number).filter(n => !isNaN(n));
+  if (Array.isArray(val)) return val.filter(v => v != null);
+  const keys = Object.keys(val).map(Number).filter(n => !Number.isNaN(n));
   if (!keys.length) return [];
   const arr = [];
   keys.sort((a, b) => a - b).forEach(k => { arr[k] = val[k]; });
-  return arr.filter(Boolean);
+  return arr.filter(v => v != null);
 }
 
-// Page key scheme:
-//   spreadOnly    → "s0", "s1" ...
-//   chapter mode  → "ch0_s0", "ch1_s0" ...
-//   special pages → "cover_front", "cover_back", "dedication", "theme"
+function clone(v) {
+  return JSON.parse(JSON.stringify(v ?? null));
+}
 
-function parsePageKey(key) {
-  if (key === 'cover_front') return { type: 'cover', side: 'front' };
-  if (key === 'cover_back')  return { type: 'cover', side: 'back'  };
-  if (key === 'dedication')  return { type: 'dedication' };
-  if (key === 'theme')       return { type: 'theme' };
-
-  const spreadOnly = /^s\d+$/.test(key);
-  if (spreadOnly) {
-    return { type: 'spread', spreadOnly: true, chapterIndex: 0, spreadIndex: parseInt(key.slice(1), 10) };
-  }
-  const m = key.match(/^ch(\d+)_s(\d+)$/);
-  if (!m) throw new ValidationError(`Invalid page key: "${key}"`);
-  return {
-    type: 'spread', spreadOnly: false,
-    chapterIndex: parseInt(m[1], 10),
-    spreadIndex:  parseInt(m[2], 10),
-  };
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function getEffectiveTextContent(arts) {
@@ -53,575 +40,956 @@ function getEffectiveTextContent(arts) {
   return humanized.length ? humanized : normArr(arts.chapters);
 }
 
-function buildPageEntry(key, spread, illustration, edit) {
+function parsePageKey(key) {
+  if (key === 'cover_front') return { type: 'cover', side: 'front' };
+  if (key === 'cover_back') return { type: 'cover', side: 'back' };
+  if (key === 'dedication') return { type: 'dedication' };
+  if (key === 'theme') return { type: 'theme' };
+
+  if (/^s\d+$/.test(key)) {
+    return {
+      type: 'spread',
+      spreadOnly: true,
+      chapterIndex: 0,
+      spreadIndex: parseInt(key.slice(1), 10),
+    };
+  }
+
+  const m = key.match(/^ch(\d+)_s(\d+)$/);
+  if (!m) throw new ValidationError(`Invalid page key: "${key}"`);
+
   return {
-    key,
-    text:               spread?.text              || null,
-    textPrompt:         spread?.prompt            || null,
-    illustrationHint:   spread?.illustrationHint  || null,
-    textPosition:       spread?.textPosition      || 'bottom',
-    charactersInScene:  spread?.charactersInScene || [],
-    characterEmotion:   spread?.characterEmotion  || {},
-    sceneEnvironment:   spread?.sceneEnvironment  || null,
-    imageUrl:           illustration?.imageUrl    || null,
-    imagePrompt:        illustration?.prompt      || null,
-    seed:               illustration?.seed        || null,
-    variants:           normArr(illustration?.variants),
-    selectedVariantIndex: illustration?.selectedVariantIndex ?? 0,
-    status:             edit?.status              || 'draft',
-    notes:              edit?.notes               || '',
-    textStyle:          edit?.textStyle           || null,
-    imageStyle:         edit?.imageStyle          || null,
-    layout:             edit?.layout              || 'text-bottom',
-    textVersionCount:   edit?.textVersions?.length  || 0,
-    imageVersionCount:  edit?.imageVersions?.length || 0,
-    approvedAt:         edit?.approvedAt          || null,
-    rejectionReason:    edit?.rejectionReason     || null,
-    updatedAt:          edit?.updatedAt           || null,
+    type: 'spread',
+    spreadOnly: false,
+    chapterIndex: parseInt(m[1], 10),
+    spreadIndex: parseInt(m[2], 10),
   };
 }
 
-// ─── GET /api/projects/:id/pages ─────────────────────────────────────────────
+function ensurePageEdit(arts, key) {
+  if (!arts.pageEdits) arts.pageEdits = {};
+  if (!arts.pageEdits[key]) {
+    arts.pageEdits[key] = {
+      status: 'draft',
+      notes: '',
+      approvedAt: null,
+      rejectionReason: '',
+      updatedAt: nowIso(),
+      textStyle: {},
+      imageStyle: {},
+      layout: 'text-bottom',
+      textVersions: [],
+      imageVersions: [],
+      currentTextVersion: 0,
+      currentImageVersion: 0,
+    };
+  }
+  return arts.pageEdits[key];
+}
+
+function buildPageEntry(key, spread, illustration, edit) {
+  return {
+    key,
+    text: spread?.text || null,
+    textPrompt: spread?.prompt || null,
+    illustrationHint: spread?.illustrationHint || null,
+    textPosition: spread?.textPosition || 'bottom',
+    charactersInScene: spread?.charactersInScene || spread?.charactersInSpread || [],
+    characterEmotion: spread?.characterEmotion || {},
+    sceneEnvironment: spread?.sceneEnvironment || null,
+    timeOfDay: spread?.timeOfDay || null,
+
+    imageUrl: illustration?.imageUrl || null,
+    imagePrompt: illustration?.prompt || null,
+    seed: illustration?.seed || null,
+    variants: normArr(illustration?.variants),
+    selectedVariantIndex: illustration?.selectedVariantIndex ?? 0,
+
+    status: edit?.status || 'draft',
+    notes: edit?.notes || '',
+    approvedAt: edit?.approvedAt || null,
+    rejectionReason: edit?.rejectionReason || '',
+    updatedAt: edit?.updatedAt || null,
+    textStyle: clone(edit?.textStyle || {}),
+    imageStyle: clone(edit?.imageStyle || {}),
+    layout: edit?.layout || 'text-bottom',
+    textVersions: normArr(edit?.textVersions),
+    imageVersions: normArr(edit?.imageVersions),
+    currentTextVersion: edit?.currentTextVersion ?? 0,
+    currentImageVersion: edit?.currentImageVersion ?? 0,
+  };
+}
+
+function buildSpecialPageEntry(key, data, edit) {
+  return {
+    key,
+    data: clone(data || {}),
+    status: edit?.status || 'draft',
+    notes: edit?.notes || '',
+    approvedAt: edit?.approvedAt || null,
+    rejectionReason: edit?.rejectionReason || '',
+    updatedAt: edit?.updatedAt || null,
+    textStyle: clone(edit?.textStyle || {}),
+    imageStyle: clone(edit?.imageStyle || {}),
+    layout: edit?.layout || 'text-bottom',
+    textVersions: normArr(edit?.textVersions),
+    imageVersions: normArr(edit?.imageVersions),
+    currentTextVersion: edit?.currentTextVersion ?? 0,
+    currentImageVersion: edit?.currentImageVersion ?? 0,
+  };
+}
+
+async function getProjectForUser(projectId, userId) {
+  const project = await Project.findById(projectId);
+  if (!project) throw new NotFoundError('Project not found');
+  if (!project.userId.equals(userId)) throw new ForbiddenError();
+  return project;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET all pages
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.get('/:id/pages', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError('Project not found');
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const pages = [];
 
-    const arts       = project.artifacts || {};
-    const spreadOnly = !!(arts.spreadOnly);
-    const pages      = [];
+    // Special pages
+    if (arts.cover?.frontUrl || arts.cover?.frontPrompt) {
+      pages.push(buildSpecialPageEntry(
+        'cover_front',
+        {
+          imageUrl: arts.cover?.frontUrl || '',
+          prompt: arts.cover?.frontPrompt || '',
+          seed: arts.cover?.frontSeed || null,
+          variants: normArr(arts.cover?.frontVariants),
+          selectedVariantIndex: arts.cover?.frontSelectedVariantIndex ?? 0,
+        },
+        arts.pageEdits?.cover_front,
+      ));
+    }
 
-    if (spreadOnly) {
-      const spreads    = normArr(arts.spreads);
-      const illSpreads = normArr(arts.spreadIllustrations);
+    if (arts.cover?.backUrl || arts.cover?.backPrompt) {
+      pages.push(buildSpecialPageEntry(
+        'cover_back',
+        {
+          imageUrl: arts.cover?.backUrl || '',
+          prompt: arts.cover?.backPrompt || '',
+          seed: arts.cover?.backSeed || null,
+          variants: normArr(arts.cover?.backVariants),
+          selectedVariantIndex: arts.cover?.backSelectedVariantIndex ?? 0,
+        },
+        arts.pageEdits?.cover_back,
+      ));
+    }
 
-      spreads.forEach((s, i) => {
-        const key  = `s${i}`;
-        const edit = arts.pageEdits?.[key] || {};
-        pages.push({
-          ...buildPageEntry(key, s, illSpreads[i], edit),
-          label:        `Spread ${i + 1}`,
-          chapterIndex: 0,
-          spreadIndex:  i,
-        });
+    if (arts.dedication) {
+      pages.push(buildSpecialPageEntry('dedication', arts.dedication, arts.pageEdits?.dedication));
+    }
+
+    if (arts.themePage) {
+      pages.push(buildSpecialPageEntry('theme', arts.themePage, arts.pageEdits?.theme));
+    }
+
+    // Story pages
+    if (arts.spreadOnly) {
+      const spreads = normArr(arts.spreads);
+      const illustrations = normArr(arts.spreadIllustrations);
+
+      spreads.forEach((spread, si) => {
+        const key = `s${si}`;
+        pages.push(buildPageEntry(key, spread, illustrations[si], arts.pageEdits?.[key]));
       });
-
     } else {
-      const textContent   = getEffectiveTextContent(arts);
+      const textContent = getEffectiveTextContent(arts);
       const illustrations = normArr(arts.illustrations);
 
-      textContent.forEach((ch, ci) => {
-        if (!ch) return;
-        const chSpreads  = normArr(ch.spreads);
-        const illCh      = illustrations[ci] || {};
+      textContent.forEach((chapter, ci) => {
+        const chSpreads = normArr(chapter?.spreads);
+        const illCh = illustrations[ci] || {};
         const illSpreads = normArr(illCh.spreads);
 
         if (chSpreads.length) {
-          chSpreads.forEach((s, si) => {
-            const key  = `ch${ci}_s${si}`;
-            const edit = arts.pageEdits?.[key] || {};
-            pages.push({
-              ...buildPageEntry(key, s, illSpreads[si], edit),
-              label:        `Ch.${ci + 1} P${si + 1}`,
-              chapterIndex: ci,
-              spreadIndex:  si,
-              chapterTitle: ch.chapterTitle || `Chapter ${ci + 1}`,
-            });
+          chSpreads.forEach((spread, si) => {
+            const key = `ch${ci}_s${si}`;
+            pages.push(buildPageEntry(key, spread, illSpreads[si], arts.pageEdits?.[key]));
           });
-        } else if (ch.text) {
-          // Chapter book without spreads
-          const key      = `ch${ci}_s0`;
-          const edit     = arts.pageEdits?.[key] || {};
-          const illVar   = illCh.variants?.[illCh.selectedVariantIndex ?? 0] || {};
-          pages.push({
-            ...buildPageEntry(key, { text: ch.text, prompt: ch.prompt }, illVar, edit),
-            label:        `Ch.${ci + 1}`,
-            chapterIndex: ci,
-            spreadIndex:  0,
-            chapterTitle: ch.chapterTitle || `Chapter ${ci + 1}`,
-          });
+        } else {
+          // chapter-book prose fallback
+          const key = `ch${ci}_s0`;
+          const proseFallback = {
+            text: chapter?.chapterText || chapter?.text || '',
+            prompt: chapter?.prompt || '',
+            illustrationHint:
+              normArr(chapter?.illustrationMoments)?.[0]?.illustrationHint ||
+              chapter?.chapterIllustrationHint ||
+              chapter?.chapterSummary ||
+              '',
+            textPosition: 'bottom',
+            charactersInScene:
+              normArr(chapter?.illustrationMoments)?.[0]?.charactersInScene || [],
+            sceneEnvironment:
+              normArr(chapter?.illustrationMoments)?.[0]?.sceneEnvironment || 'mixed',
+            timeOfDay:
+              normArr(chapter?.illustrationMoments)?.[0]?.timeOfDay || 'day',
+          };
+          pages.push(buildPageEntry(key, proseFallback, illSpreads[0], arts.pageEdits?.[key]));
         }
       });
     }
 
-    // Summary counts
-    const summary = {
-      total:       pages.length,
-      draft:       pages.filter(p => p.status === 'draft').length,
-      edited:      pages.filter(p => p.status === 'edited').length,
-      regenerated: pages.filter(p => p.status === 'regenerated').length,
-      approved:    pages.filter(p => p.status === 'approved').length,
-      rejected:    pages.filter(p => p.status === 'rejected').length,
-      withImages:  pages.filter(p => p.imageUrl).length,
-      withVariants: pages.filter(p => p.variants?.length > 0).length,
-    };
-
-    res.json({ pages, spreadOnly, summary });
-  } catch (e) { next(e); }
+    res.json({ pages });
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── GET /api/projects/:id/pages/:key ────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET single page
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.get('/:id/pages/:key', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError('Project not found');
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const parsed = parsePageKey(req.params.key);
 
-    const { key } = req.params;
-    const arts     = project.artifacts || {};
-    const parsed   = parsePageKey(key);
-    const edit     = arts.pageEdits?.[key] || {};
+    if (parsed.type === 'cover') {
+      const side = parsed.side;
+      const data = side === 'front'
+        ? {
+            imageUrl: arts.cover?.frontUrl || '',
+            prompt: arts.cover?.frontPrompt || '',
+            seed: arts.cover?.frontSeed || null,
+            variants: normArr(arts.cover?.frontVariants),
+            selectedVariantIndex: arts.cover?.frontSelectedVariantIndex ?? 0,
+          }
+        : {
+            imageUrl: arts.cover?.backUrl || '',
+            prompt: arts.cover?.backPrompt || '',
+            seed: arts.cover?.backSeed || null,
+            variants: normArr(arts.cover?.backVariants),
+            selectedVariantIndex: arts.cover?.backSelectedVariantIndex ?? 0,
+          };
 
-    let spread = null, illustration = null;
-
-    if (parsed.type === 'spread') {
-      const { spreadOnly: so, chapterIndex, spreadIndex } = parsed;
-      if (so || arts.spreadOnly) {
-        spread       = normArr(arts.spreads)[spreadIndex];
-        illustration = normArr(arts.spreadIllustrations)[spreadIndex];
-      } else {
-        const textContent = getEffectiveTextContent(arts);
-        const ch          = textContent[chapterIndex] || {};
-        spread            = normArr(ch.spreads)[spreadIndex] || { text: ch.text, prompt: ch.prompt };
-        const illCh       = normArr(arts.illustrations)[chapterIndex] || {};
-        const illSpreads  = normArr(illCh.spreads);
-        illustration      = illSpreads[spreadIndex] || illCh.variants?.[illCh.selectedVariantIndex ?? 0] || null;
-      }
-    } else if (parsed.type === 'cover') {
-      illustration = {
-        imageUrl: parsed.side === 'front' ? arts.cover?.frontUrl  : arts.cover?.backUrl,
-        prompt:   parsed.side === 'front' ? arts.cover?.frontPrompt : arts.cover?.backPrompt,
-        variants: normArr(parsed.side === 'front' ? arts.cover?.frontVariants : arts.cover?.backVariants),
-      };
-    } else if (parsed.type === 'dedication') {
-      spread = arts.dedication;
-    } else if (parsed.type === 'theme') {
-      spread = arts.themePage;
+      return res.json(buildSpecialPageEntry(req.params.key, data, arts.pageEdits?.[req.params.key]));
     }
 
-    res.json({
-      key,
-      parsed,
-      spread,
-      illustration,
-      status:               edit.status              || 'draft',
-      notes:                edit.notes               || '',
-      textStyle:            edit.textStyle           || null,
-      imageStyle:           edit.imageStyle          || null,
-      layout:               edit.layout              || 'text-bottom',
-      approvedAt:           edit.approvedAt          || null,
-      rejectionReason:      edit.rejectionReason     || null,
-      textVersions:         edit.textVersions        || [],
-      imageVersions:        edit.imageVersions       || [],
-      currentTextVersion:   edit.currentTextVersion  || 0,
-      currentImageVersion:  edit.currentImageVersion || 0,
-      updatedAt:            edit.updatedAt           || null,
-    });
-  } catch (e) { next(e); }
+    if (parsed.type === 'dedication') {
+      return res.json(buildSpecialPageEntry(req.params.key, arts.dedication, arts.pageEdits?.[req.params.key]));
+    }
+
+    if (parsed.type === 'theme') {
+      return res.json(buildSpecialPageEntry(req.params.key, arts.themePage, arts.pageEdits?.[req.params.key]));
+    }
+
+    let spread = null;
+    let illustration = null;
+
+    if (parsed.spreadOnly || arts.spreadOnly) {
+      spread = normArr(arts.spreads)[parsed.spreadIndex] || null;
+      illustration = normArr(arts.spreadIllustrations)[parsed.spreadIndex] || null;
+    } else {
+      const textContent = getEffectiveTextContent(arts);
+      const chapter = textContent[parsed.chapterIndex] || {};
+      const chSpreads = normArr(chapter?.spreads);
+
+      if (chSpreads.length) {
+        spread = chSpreads[parsed.spreadIndex] || null;
+      } else {
+        spread = {
+          text: chapter?.chapterText || chapter?.text || '',
+          prompt: chapter?.prompt || '',
+          illustrationHint:
+            normArr(chapter?.illustrationMoments)?.[parsed.spreadIndex]?.illustrationHint ||
+            normArr(chapter?.illustrationMoments)?.[0]?.illustrationHint ||
+            chapter?.chapterIllustrationHint ||
+            chapter?.chapterSummary ||
+            '',
+          textPosition: 'bottom',
+          charactersInScene:
+            normArr(chapter?.illustrationMoments)?.[parsed.spreadIndex]?.charactersInScene ||
+            normArr(chapter?.illustrationMoments)?.[0]?.charactersInScene ||
+            [],
+          sceneEnvironment:
+            normArr(chapter?.illustrationMoments)?.[parsed.spreadIndex]?.sceneEnvironment ||
+            normArr(chapter?.illustrationMoments)?.[0]?.sceneEnvironment ||
+            'mixed',
+          timeOfDay:
+            normArr(chapter?.illustrationMoments)?.[parsed.spreadIndex]?.timeOfDay ||
+            normArr(chapter?.illustrationMoments)?.[0]?.timeOfDay ||
+            'day',
+        };
+      }
+
+      const illCh = normArr(arts.illustrations)[parsed.chapterIndex] || {};
+      illustration = normArr(illCh.spreads)[parsed.spreadIndex] || null;
+    }
+
+    res.json(buildPageEntry(req.params.key, spread, illustration, arts.pageEdits?.[req.params.key]));
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── PATCH /api/projects/:id/pages/:key ──────────────────────────────────────
-// Manual text edit OR style update — saves version, sets status = 'edited'
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH page content / style
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.patch('/:id/pages/:key', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError('Project not found');
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
-
-    const { key } = req.params;
-    const { text, notes, textStyle, imageStyle, layout } = req.body;
-    const arts   = project.artifacts || {};
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const key = req.params.key;
     const parsed = parsePageKey(key);
-    const now    = new Date().toISOString();
-    const set    = {};
+    const edit = ensurePageEdit(arts, key);
 
-    // Update page text
-    if (text !== undefined && parsed.type === 'spread') {
-      const { spreadOnly: so, chapterIndex, spreadIndex } = parsed;
+    const now = nowIso();
+    edit.updatedAt = now;
+    edit.status = req.body.status || 'edited';
 
-      if (so || arts.spreadOnly) {
-        const spreads = normArr(arts.spreads);
-        if (!spreads[spreadIndex]) throw new ValidationError('Spread index out of range');
-        spreads[spreadIndex] = { ...spreads[spreadIndex], text };
-        set['artifacts.spreads'] = spreads;
-      } else {
-        const isHumanized = normArr(arts.humanized).length > 0;
-        const dbKey       = isHumanized ? 'artifacts.humanized' : 'artifacts.chapters';
-        const chapters    = getEffectiveTextContent(arts);
-        const ch          = chapters[chapterIndex];
-        if (!ch) throw new ValidationError('Chapter index out of range');
+    if (req.body.notes !== undefined) edit.notes = req.body.notes;
+    if (req.body.layout !== undefined) edit.layout = req.body.layout;
+    if (req.body.textStyle !== undefined) edit.textStyle = clone(req.body.textStyle || {});
+    if (req.body.imageStyle !== undefined) edit.imageStyle = clone(req.body.imageStyle || {});
+    if (req.body.rejectionReason !== undefined) edit.rejectionReason = req.body.rejectionReason || '';
 
-        const chSpreads = normArr(ch.spreads);
-        if (chSpreads[spreadIndex] !== undefined) {
-          chSpreads[spreadIndex] = { ...chSpreads[spreadIndex], text };
-          chapters[chapterIndex] = { ...ch, spreads: chSpreads };
-        } else {
-          chapters[chapterIndex] = { ...ch, text };
-        }
-        set[dbKey] = chapters;
+    if (parsed.type === 'cover') {
+      if (!arts.cover) arts.cover = {};
+      const side = parsed.side;
+
+      if (req.body.imagePrompt !== undefined) {
+        if (side === 'front') arts.cover.frontPrompt = req.body.imagePrompt;
+        else arts.cover.backPrompt = req.body.imagePrompt;
       }
 
-      // Snapshot text version
-      const existingVersions = arts.pageEdits?.[key]?.textVersions || [];
-      set[`artifacts.pageEdits.${key}.textVersions`] = [
-        ...existingVersions,
-        { version: existingVersions.length + 1, text, prompt: null, source: 'manual', createdAt: now },
-      ];
-      set[`artifacts.pageEdits.${key}.currentTextVersion`] = existingVersions.length + 1;
+      if (req.body.imageUrl !== undefined) {
+        if (side === 'front') arts.cover.frontUrl = req.body.imageUrl;
+        else arts.cover.backUrl = req.body.imageUrl;
+      }
+
+      project.markModified('artifacts');
+      await project.save();
+      return res.json({ message: 'Page updated', key });
     }
 
-    // Update style / layout (Step 5 editor)
-    if (textStyle !== undefined) set[`artifacts.pageEdits.${key}.textStyle`] = textStyle;
-    if (imageStyle !== undefined) set[`artifacts.pageEdits.${key}.imageStyle`] = imageStyle;
-    if (layout !== undefined) set[`artifacts.pageEdits.${key}.layout`] = layout;
-    if (notes  !== undefined) set[`artifacts.pageEdits.${key}.notes`]  = notes;
+    if (parsed.type === 'dedication') {
+      arts.dedication = { ...(arts.dedication || {}), ...(req.body.data || {}) };
+      project.markModified('artifacts');
+      await project.save();
+      return res.json({ message: 'Page updated', key });
+    }
 
-    set[`artifacts.pageEdits.${key}.status`]    = 'edited';
-    set[`artifacts.pageEdits.${key}.updatedAt`] = now;
+    if (parsed.type === 'theme') {
+      arts.themePage = { ...(arts.themePage || {}), ...(req.body.data || {}) };
+      project.markModified('artifacts');
+      await project.save();
+      return res.json({ message: 'Page updated', key });
+    }
 
-    await Project.findByIdAndUpdate(req.params.id, { $set: set });
-    res.json({ message: 'Page updated', key, status: 'edited' });
-  } catch (e) { next(e); }
+    if (parsed.spreadOnly || arts.spreadOnly) {
+      const spreads = normArr(arts.spreads);
+      const si = parsed.spreadIndex;
+      const prev = spreads[si] || {};
+
+      if (req.body.text !== undefined && req.body.text !== prev.text) {
+        edit.textVersions = [
+          ...normArr(edit.textVersions),
+          {
+            version: normArr(edit.textVersions).length + 1,
+            text: prev.text || '',
+            prompt: prev.prompt || '',
+            source: 'manual-before-edit',
+            createdAt: now,
+          },
+        ].slice(-20);
+        edit.currentTextVersion = edit.textVersions.length;
+      }
+
+      spreads[si] = {
+        ...prev,
+        ...(req.body.text !== undefined ? { text: req.body.text } : {}),
+        ...(req.body.textPrompt !== undefined ? { prompt: req.body.textPrompt } : {}),
+        ...(req.body.illustrationHint !== undefined ? { illustrationHint: req.body.illustrationHint } : {}),
+        ...(req.body.textPosition !== undefined ? { textPosition: req.body.textPosition } : {}),
+        ...(req.body.charactersInScene !== undefined ? { charactersInScene: req.body.charactersInScene } : {}),
+        ...(req.body.characterEmotion !== undefined ? { characterEmotion: clone(req.body.characterEmotion) } : {}),
+        ...(req.body.sceneEnvironment !== undefined ? { sceneEnvironment: req.body.sceneEnvironment } : {}),
+        ...(req.body.timeOfDay !== undefined ? { timeOfDay: req.body.timeOfDay } : {}),
+      };
+
+      arts.spreads = spreads;
+    } else {
+      const sourceKey = normArr(arts.humanized).length ? 'humanized' : 'chapters';
+      const chapters = normArr(arts[sourceKey]);
+      const ci = parsed.chapterIndex;
+      const si = parsed.spreadIndex;
+
+      if (!chapters[ci]) {
+        chapters[ci] = {
+          chapterNumber: ci + 1,
+          chapterTitle: `Chapter ${ci + 1}`,
+          spreads: [],
+        };
+      }
+
+      const spreads = normArr(chapters[ci].spreads);
+      const prev = spreads[si] || {};
+
+      if (req.body.text !== undefined && req.body.text !== prev.text) {
+        edit.textVersions = [
+          ...normArr(edit.textVersions),
+          {
+            version: normArr(edit.textVersions).length + 1,
+            text: prev.text || '',
+            prompt: prev.prompt || '',
+            source: 'manual-before-edit',
+            createdAt: now,
+          },
+        ].slice(-20);
+        edit.currentTextVersion = edit.textVersions.length;
+      }
+
+      spreads[si] = {
+        ...prev,
+        spreadIndex: si,
+        ...(req.body.text !== undefined ? { text: req.body.text } : {}),
+        ...(req.body.textPrompt !== undefined ? { prompt: req.body.textPrompt } : {}),
+        ...(req.body.illustrationHint !== undefined ? { illustrationHint: req.body.illustrationHint } : {}),
+        ...(req.body.textPosition !== undefined ? { textPosition: req.body.textPosition } : {}),
+        ...(req.body.charactersInScene !== undefined ? { charactersInScene: req.body.charactersInScene } : {}),
+        ...(req.body.characterEmotion !== undefined ? { characterEmotion: clone(req.body.characterEmotion) } : {}),
+        ...(req.body.sceneEnvironment !== undefined ? { sceneEnvironment: req.body.sceneEnvironment } : {}),
+        ...(req.body.timeOfDay !== undefined ? { timeOfDay: req.body.timeOfDay } : {}),
+      };
+
+      chapters[ci].spreads = spreads;
+      arts[sourceKey] = chapters;
+    }
+
+    project.markModified('artifacts');
+    await project.save();
+    res.json({ message: 'Page updated', key });
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/:key/approve ───────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Approve / reject page
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/pages/:key/approve', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const edit = ensurePageEdit(arts, req.params.key);
 
-    const { key } = req.params;
-    const now     = new Date().toISOString();
+    edit.status = 'approved';
+    edit.approvedAt = nowIso();
+    edit.updatedAt = nowIso();
 
-    await Project.findByIdAndUpdate(req.params.id, {
-      $set: {
-        [`artifacts.pageEdits.${key}.status`]:     'approved',
-        [`artifacts.pageEdits.${key}.approvedAt`]: now,
-        [`artifacts.pageEdits.${key}.updatedAt`]:  now,
-      },
-    });
-    res.json({ message: 'Approved', key, status: 'approved', approvedAt: now });
-  } catch (e) { next(e); }
+    project.markModified('artifacts');
+    await project.save();
+
+    res.json({ message: 'Page approved', key: req.params.key });
+  } catch (e) {
+    next(e);
+  }
 });
-
-// ─── POST /api/projects/:id/pages/:key/reject ────────────────────────────────
 
 router.post('/:id/pages/:key/reject', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const edit = ensurePageEdit(arts, req.params.key);
 
-    const { key } = req.params;
-    const { reason = '' } = req.body;
-    const now = new Date().toISOString();
+    edit.status = 'rejected';
+    edit.rejectionReason = req.body.reason || '';
+    edit.updatedAt = nowIso();
 
-    await Project.findByIdAndUpdate(req.params.id, {
-      $set: {
-        [`artifacts.pageEdits.${key}.status`]:          'rejected',
-        [`artifacts.pageEdits.${key}.rejectionReason`]: reason,
-        [`artifacts.pageEdits.${key}.updatedAt`]:       now,
-      },
-    });
-    res.json({ message: 'Rejected', key, status: 'rejected', reason });
-  } catch (e) { next(e); }
+    project.markModified('artifacts');
+    await project.save();
+
+    res.json({ message: 'Page rejected', key: req.params.key });
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/:key/select-variant ────────────────────────
-// Step 4: User selects which image variant to use for this page
+// ─────────────────────────────────────────────────────────────────────────────
+// Select image variant
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/pages/:key/select-variant', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
-
-    const { key }          = req.params;
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const key = req.params.key;
     const { variantIndex } = req.body;
+
     if (variantIndex === undefined) throw new ValidationError('variantIndex is required');
 
     const parsed = parsePageKey(key);
-    const arts   = project.artifacts || {};
-    const now    = new Date().toISOString();
-    const set    = {};
+    const edit = ensurePageEdit(arts, key);
 
-    if (parsed.type === 'spread') {
-      const { spreadOnly: so, chapterIndex, spreadIndex } = parsed;
+    if (parsed.type === 'cover') {
+      const side = parsed.side;
+      const variants = side === 'front'
+        ? normArr(arts.cover?.frontVariants)
+        : normArr(arts.cover?.backVariants);
 
-      if (so || arts.spreadOnly) {
-        const ills = normArr(arts.spreadIllustrations);
-        if (!ills[spreadIndex]) throw new ValidationError('No illustrations found for this spread');
-        const variants = normArr(ills[spreadIndex].variants);
-        const chosen   = variants[variantIndex];
-        if (!chosen) throw new ValidationError(`Variant ${variantIndex} not found`);
+      const chosen = variants[variantIndex];
+      if (!chosen) throw new ValidationError(`Variant ${variantIndex} not found`);
 
-        ills[spreadIndex] = {
-          ...ills[spreadIndex],
-          selectedVariantIndex: variantIndex,
-          imageUrl: chosen.imageUrl,
-        };
-        set['artifacts.spreadIllustrations'] = ills;
-
+      if (!arts.cover) arts.cover = {};
+      if (side === 'front') {
+        arts.cover.frontSelectedVariantIndex = variantIndex;
+        arts.cover.frontUrl = chosen.imageUrl;
+        arts.cover.frontPrompt = chosen.prompt || arts.cover.frontPrompt || '';
+        arts.cover.frontSeed = chosen.seed || arts.cover.frontSeed || null;
       } else {
-        const illustrations = normArr(arts.illustrations);
-        const illCh         = illustrations[chapterIndex] || {};
-        const illSpreads    = normArr(illCh.spreads);
-        if (!illSpreads[spreadIndex]) throw new ValidationError('No illustrations found');
-        const variants = normArr(illSpreads[spreadIndex].variants);
-        const chosen   = variants[variantIndex];
-        if (!chosen) throw new ValidationError(`Variant ${variantIndex} not found`);
-
-        illSpreads[spreadIndex] = {
-          ...illSpreads[spreadIndex],
-          selectedVariantIndex: variantIndex,
-          imageUrl: chosen.imageUrl,
-        };
-        illCh.spreads = illSpreads;
-        illustrations[chapterIndex] = illCh;
-        set['artifacts.illustrations'] = illustrations;
+        arts.cover.backSelectedVariantIndex = variantIndex;
+        arts.cover.backUrl = chosen.imageUrl;
+        arts.cover.backPrompt = chosen.prompt || arts.cover.backPrompt || '';
+        arts.cover.backSeed = chosen.seed || arts.cover.backSeed || null;
       }
+
+      edit.status = 'edited';
+      edit.updatedAt = nowIso();
+
+      project.markModified('artifacts');
+      await project.save();
+      return res.json({ message: 'Variant selected', key, variantIndex });
     }
 
-    set[`artifacts.pageEdits.${key}.status`]    = 'edited';
-    set[`artifacts.pageEdits.${key}.updatedAt`] = now;
+    if (parsed.spreadOnly || arts.spreadOnly) {
+      const ills = normArr(arts.spreadIllustrations);
+      if (!ills[parsed.spreadIndex]) throw new ValidationError('No illustrations found for this spread');
 
-    await Project.findByIdAndUpdate(req.params.id, { $set: set });
+      const variants = normArr(ills[parsed.spreadIndex].variants);
+      const chosen = variants[variantIndex];
+      if (!chosen) throw new ValidationError(`Variant ${variantIndex} not found`);
+
+      ills[parsed.spreadIndex] = {
+        ...ills[parsed.spreadIndex],
+        selectedVariantIndex: variantIndex,
+        imageUrl: chosen.imageUrl,
+        prompt: chosen.prompt || ills[parsed.spreadIndex].prompt || '',
+        seed: chosen.seed || ills[parsed.spreadIndex].seed || null,
+      };
+      arts.spreadIllustrations = ills;
+    } else {
+      const illustrations = normArr(arts.illustrations);
+      const illCh = illustrations[parsed.chapterIndex] || { chapterNumber: parsed.chapterIndex + 1, spreads: [] };
+      const illSpreads = normArr(illCh.spreads);
+
+      if (!illSpreads[parsed.spreadIndex]) throw new ValidationError('No illustrations found');
+
+      const variants = normArr(illSpreads[parsed.spreadIndex].variants);
+      const chosen = variants[variantIndex];
+      if (!chosen) throw new ValidationError(`Variant ${variantIndex} not found`);
+
+      illSpreads[parsed.spreadIndex] = {
+        ...illSpreads[parsed.spreadIndex],
+        selectedVariantIndex: variantIndex,
+        imageUrl: chosen.imageUrl,
+        prompt: chosen.prompt || illSpreads[parsed.spreadIndex].prompt || '',
+        seed: chosen.seed || illSpreads[parsed.spreadIndex].seed || null,
+      };
+
+      illCh.spreads = illSpreads;
+      illustrations[parsed.chapterIndex] = illCh;
+      arts.illustrations = illustrations;
+    }
+
+    edit.status = 'edited';
+    edit.updatedAt = nowIso();
+
+    project.markModified('artifacts');
+    await project.save();
+
     res.json({ message: 'Variant selected', key, variantIndex });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/:key/regenerate ────────────────────────────
-// Re-generate text, image, or both with optional custom prompt
+// ─────────────────────────────────────────────────────────────────────────────
+// Regenerate page text / image / both
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/pages/:key/regenerate', async (req, res, next) => {
+  const start = Date.now();
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const key = req.params.key;
+    const parsed = parsePageKey(key);
+    const edit = ensurePageEdit(arts, key);
 
-    const { key }  = req.params;
-    const { textPrompt, imagePrompt, type = 'both', variantCount = 1 } = req.body;
-    const parsed   = parsePageKey(key);
-    const { chapterIndex = 0, spreadIndex = 0 } = parsed;
-    const start    = Date.now();
+    const {
+      textPrompt,
+      imagePrompt,
+      type = 'both',
+      variantCount = 1,
+      style,
+    } = req.body;
 
-    // Credit calculation
-    let totalCost = 0;
-    if ((type === 'text' || type === 'both') && textPrompt)   totalCost += STAGE_CREDIT_COSTS.chapter ?? 1;
-    if ((type === 'image' || type === 'both') && imagePrompt) totalCost += (STAGE_CREDIT_COSTS.illustration ?? 4) * variantCount;
-
-    if (req.user.credits < totalCost) {
-      return res.status(402).json({
-        error: { code: 'INSUFFICIENT_CREDITS', message: `Need ${totalCost} credits, have ${req.user.credits}`, required: totalCost },
-      });
+    if (!['text', 'image', 'both'].includes(type)) {
+      throw new ValidationError('type must be text, image, or both');
     }
 
-    const now = new Date().toISOString();
-    let textResult = null, imageResult = null;
+    // Text regenerate
+    if ((type === 'text' || type === 'both') && parsed.type === 'spread') {
+      if (!textPrompt) throw new ValidationError('textPrompt required for text regenerate');
 
-    // Text regeneration
-    if ((type === 'text' || type === 'both') && textPrompt) {
-      const r = await generateStageText({
-        stage: 'spreadRerun', projectId: req.params.id,
+      const stage = 'spreadRerun';
+      const result = await generateStageText({
+        stage,
+        projectId: project._id.toString(),
         userId: req.user._id.toString(),
-        chapterIndex, spreadIndex,
+        chapterIndex: parsed.chapterIndex,
+        spreadIndex: parsed.spreadIndex,
         customPrompt: textPrompt,
       });
-      textResult = r.result;
+
+      if (parsed.spreadOnly || arts.spreadOnly) {
+        const spreads = normArr(arts.spreads);
+        const prev = spreads[parsed.spreadIndex] || {};
+
+        edit.textVersions = [
+          ...normArr(edit.textVersions),
+          {
+            version: normArr(edit.textVersions).length + 1,
+            text: prev.text || '',
+            prompt: prev.prompt || '',
+            source: 'rerun',
+            createdAt: nowIso(),
+          },
+        ].slice(-20);
+        edit.currentTextVersion = edit.textVersions.length;
+
+        spreads[parsed.spreadIndex] = { ...prev, ...result.result };
+        arts.spreads = spreads;
+      } else {
+        const sourceKey = normArr(arts.humanized).length ? 'humanized' : 'chapters';
+        const chapters = normArr(arts[sourceKey]);
+        const chapter = chapters[parsed.chapterIndex] || {};
+        const spreads = normArr(chapter.spreads);
+        const prev = spreads[parsed.spreadIndex] || {};
+
+        edit.textVersions = [
+          ...normArr(edit.textVersions),
+          {
+            version: normArr(edit.textVersions).length + 1,
+            text: prev.text || '',
+            prompt: prev.prompt || '',
+            source: 'rerun',
+            createdAt: nowIso(),
+          },
+        ].slice(-20);
+        edit.currentTextVersion = edit.textVersions.length;
+
+        spreads[parsed.spreadIndex] = { ...prev, ...result.result };
+        chapters[parsed.chapterIndex] = { ...chapter, spreads };
+        arts[sourceKey] = chapters;
+      }
     }
 
-    // Image regeneration (generates variantCount images)
-    if ((type === 'image' || type === 'both') && imagePrompt) {
-      // Generate multiple variants if requested
-      const variants = [];
-      for (let vi = 0; vi < Math.min(variantCount, 5); vi++) {
-        const r = await generateStageImage({
-          task:         'illustration',
-          chapterIndex,
-          spreadIndex,
-          projectId:    req.params.id,
-          userId:       req.user._id.toString(),
-          customPrompt: imagePrompt,
-          seed:         Date.now() + vi * 1000, // different seed per variant
-        });
-        variants.push({ variantIndex: vi, imageUrl: r.imageUrl, prompt: imagePrompt, seed: r.seed });
-        if (vi === 0) imageResult = r;
-      }
+    // Image regenerate
+    if ((type === 'image' || type === 'both')) {
+      if (parsed.type === 'cover') {
+        const side = parsed.side;
+        const safeVariantCount = Math.min(Math.max(parseInt(variantCount, 10) || 1, 1), 5);
+        const totalCost = (STAGE_CREDIT_COSTS.illustration ?? 4) * safeVariantCount;
 
-      // If multiple variants, save them all
-      if (variantCount > 1 && variants.length > 1) {
-        const freshProject = await Project.findById(req.params.id);
-        const arts         = freshProject.artifacts || {};
-        const setV         = {};
-        const { spreadOnly: so } = parsed;
+        if (req.user.credits < totalCost) {
+          return res.status(402).json({
+            error: {
+              code: 'INSUFFICIENT_CREDITS',
+              message: `Need ${totalCost} credits`,
+              required: totalCost,
+              available: req.user.credits,
+            },
+          });
+        }
 
-        if (so || arts.spreadOnly) {
+        const variants = [];
+        for (let vi = 0; vi < safeVariantCount; vi++) {
+          const result = await generateStageImage({
+            task: side === 'front' ? 'cover' : 'back-cover',
+            projectId: project._id.toString(),
+            userId: req.user._id.toString(),
+            customPrompt: imagePrompt,
+            traceId: `page_cover_${side}_${project._id}_${Date.now()}_${vi}`,
+            style,
+          });
+
+          variants.push({
+            variantIndex: vi,
+            imageUrl: result.imageUrl,
+            prompt: result.prompt || imagePrompt || '',
+            seed: result.seed || null,
+            selected: vi === 0,
+          });
+        }
+
+        if (!arts.cover) arts.cover = {};
+        if (side === 'front') {
+          arts.cover.frontVariants = variants;
+          arts.cover.frontSelectedVariantIndex = 0;
+          arts.cover.frontUrl = variants[0]?.imageUrl || '';
+          arts.cover.frontPrompt = variants[0]?.prompt || '';
+          arts.cover.frontSeed = variants[0]?.seed || null;
+        } else {
+          arts.cover.backVariants = variants;
+          arts.cover.backSelectedVariantIndex = 0;
+          arts.cover.backUrl = variants[0]?.imageUrl || '';
+          arts.cover.backPrompt = variants[0]?.prompt || '';
+          arts.cover.backSeed = variants[0]?.seed || null;
+        }
+
+        edit.imageVersions = [
+          ...normArr(edit.imageVersions),
+          {
+            version: normArr(edit.imageVersions).length + 1,
+            imageUrl: side === 'front' ? arts.cover.frontUrl : arts.cover.backUrl,
+            prompt: imagePrompt || '',
+            source: 'rerun',
+            createdAt: nowIso(),
+          },
+        ].slice(-20);
+        edit.currentImageVersion = edit.imageVersions.length;
+
+        await deductCredits(req.user._id, totalCost, `Page cover regenerate: ${side}`, 'project', project._id);
+      } else if (parsed.type === 'spread') {
+        const safeVariantCount = Math.min(Math.max(parseInt(variantCount, 10) || 1, 1), 5);
+        const totalCost = (STAGE_CREDIT_COSTS.illustration ?? 4) * safeVariantCount;
+
+        if (req.user.credits < totalCost) {
+          return res.status(402).json({
+            error: {
+              code: 'INSUFFICIENT_CREDITS',
+              message: `Need ${totalCost} credits`,
+              required: totalCost,
+              available: req.user.credits,
+            },
+          });
+        }
+
+        const variants = [];
+        for (let vi = 0; vi < safeVariantCount; vi++) {
+          const result = await generateStageImage({
+            task: 'illustration',
+            chapterIndex: parsed.chapterIndex,
+            spreadIndex: parsed.spreadIndex,
+            projectId: project._id.toString(),
+            userId: req.user._id.toString(),
+            customPrompt: imagePrompt,
+            traceId: `page_img_${project._id}_${key}_${Date.now()}_${vi}`,
+            style,
+          });
+
+          variants.push({
+            variantIndex: vi,
+            imageUrl: result.imageUrl,
+            prompt: result.prompt || imagePrompt || '',
+            seed: result.seed || null,
+            selected: vi === 0,
+          });
+        }
+
+        edit.imageVersions = [
+          ...normArr(edit.imageVersions),
+          {
+            version: normArr(edit.imageVersions).length + 1,
+            imageUrl: variants[0]?.imageUrl || '',
+            prompt: variants[0]?.prompt || imagePrompt || '',
+            source: 'rerun',
+            createdAt: nowIso(),
+          },
+        ].slice(-20);
+        edit.currentImageVersion = edit.imageVersions.length;
+
+        if (parsed.spreadOnly || arts.spreadOnly) {
           const ills = normArr(arts.spreadIllustrations);
-          ills[spreadIndex] = {
-            ...(ills[spreadIndex] || {}),
+          ills[parsed.spreadIndex] = {
+            ...(ills[parsed.spreadIndex] || {}),
+            spreadIndex: parsed.spreadIndex,
+            imageUrl: variants[0]?.imageUrl || '',
+            prompt: variants[0]?.prompt || '',
+            seed: variants[0]?.seed || null,
             variants,
             selectedVariantIndex: 0,
-            imageUrl: variants[0].imageUrl,
+            createdAt: ills[parsed.spreadIndex]?.createdAt || nowIso(),
           };
-          setV['artifacts.spreadIllustrations'] = ills;
+          arts.spreadIllustrations = ills;
         } else {
           const illustrations = normArr(arts.illustrations);
-          const illCh         = illustrations[chapterIndex] || {};
-          const illSpreads    = normArr(illCh.spreads);
-          illSpreads[spreadIndex] = {
-            ...(illSpreads[spreadIndex] || {}),
+          const illCh = illustrations[parsed.chapterIndex] || {
+            chapterNumber: parsed.chapterIndex + 1,
+            spreads: [],
+            selectedVariantIndex: 0,
+          };
+          const illSpreads = normArr(illCh.spreads);
+
+          illSpreads[parsed.spreadIndex] = {
+            ...(illSpreads[parsed.spreadIndex] || {}),
+            spreadIndex: parsed.spreadIndex,
+            imageUrl: variants[0]?.imageUrl || '',
+            prompt: variants[0]?.prompt || '',
+            seed: variants[0]?.seed || null,
             variants,
             selectedVariantIndex: 0,
-            imageUrl: variants[0].imageUrl,
+            createdAt: illSpreads[parsed.spreadIndex]?.createdAt || nowIso(),
           };
+
           illCh.spreads = illSpreads;
-          illustrations[chapterIndex] = illCh;
-          setV['artifacts.illustrations'] = illustrations;
+          illustrations[parsed.chapterIndex] = illCh;
+          arts.illustrations = illustrations;
         }
-        await Project.findByIdAndUpdate(req.params.id, { $set: setV });
-        imageResult = { ...imageResult, variants };
+
+        await deductCredits(req.user._id, totalCost, `Page image regenerate: ${key}`, 'project', project._id);
       }
     }
 
-    // Save version snapshots
-    const freshProject = await Project.findById(req.params.id);
-    const arts         = freshProject.artifacts || {};
-    const editState    = arts.pageEdits?.[key] || {};
-    const setFields    = {};
+    edit.status = 'regenerated';
+    edit.updatedAt = nowIso();
 
-    if (textResult) {
-      const resolvedText = typeof textResult === 'object'
-        ? (textResult.text || JSON.stringify(textResult))
-        : textResult;
-      const versions = editState.textVersions || [];
-      setFields[`artifacts.pageEdits.${key}.textVersions`] = [
-        ...versions,
-        { version: versions.length + 1, text: resolvedText, prompt: textPrompt, source: 'ai-regenerated', createdAt: now },
-      ];
-      setFields[`artifacts.pageEdits.${key}.currentTextVersion`] = versions.length + 1;
-    }
-
-    if (imageResult) {
-      const versions = editState.imageVersions || [];
-      setFields[`artifacts.pageEdits.${key}.imageVersions`] = [
-        ...versions,
-        { version: versions.length + 1, imageUrl: imageResult.imageUrl, prompt: imagePrompt, source: 'ai-regenerated', createdAt: now },
-      ];
-      setFields[`artifacts.pageEdits.${key}.currentImageVersion`] = versions.length + 1;
-    }
-
-    setFields[`artifacts.pageEdits.${key}.status`]    = 'regenerated';
-    setFields[`artifacts.pageEdits.${key}.updatedAt`] = now;
-
-    await Project.findByIdAndUpdate(req.params.id, { $set: setFields });
-    await deductCredits(req.user._id, totalCost, `Page regen: ${key}`, 'project', req.params.id);
+    project.markModified('artifacts');
+    await project.save();
 
     logAIUsage({
-      userId:         req.user._id, projectId: req.params.id,
-      provider:       imageResult?.provider || 'text-only',
-      stage:          'pageRegenerate', requestType: 'mixed',
-      creditsCharged: totalCost, success: true, durationMs: Date.now() - start,
+      userId: req.user._id,
+      projectId: project._id,
+      provider: 'mixed',
+      stage: 'pages-regenerate',
+      requestType: 'mixed',
+      creditsCharged: 0,
+      success: true,
+      durationMs: Date.now() - start,
+      metadata: { key, type },
     });
 
-    res.json({
-      message: 'Regenerated', key, status: 'regenerated',
-      textResult, imageResult, creditsCharged: totalCost,
-    });
-  } catch (e) { next(e); }
+    res.json({ message: 'Page regenerated', key, type });
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/:key/restore/:versionNum ───────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Restore older version
+// ─────────────────────────────────────────────────────────────────────────────
 
-router.post('/:id/pages/:key/restore/:versionNum', async (req, res, next) => {
+router.post('/:id/pages/:key/restore-version', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
+    const key = req.params.key;
+    const { type, version } = req.body;
 
-    const { key, versionNum } = req.params;
-    const { type = 'text' } = req.body;
-    const vNum  = parseInt(versionNum, 10);
-    const arts  = project.artifacts || {};
-    const edit  = arts.pageEdits?.[key];
-    if (!edit) throw new NotFoundError('No edit history for this page');
-
-    const versions = type === 'text' ? (edit.textVersions || []) : (edit.imageVersions || []);
-    const snapshot = versions.find(v => v.version === vNum);
-    if (!snapshot) throw new NotFoundError(`Version ${vNum} not found`);
-
-    const parsed = parsePageKey(key);
-    const { spreadOnly: so, chapterIndex, spreadIndex } = parsed;
-    const now    = new Date().toISOString();
-    const set    = {};
-
-    if (type === 'text' && snapshot.text) {
-      if (so || arts.spreadOnly) {
-        const spreads = normArr(arts.spreads);
-        spreads[spreadIndex] = { ...spreads[spreadIndex], text: snapshot.text };
-        set['artifacts.spreads'] = spreads;
-      } else {
-        const isHumanized = normArr(arts.humanized).length > 0;
-        const dbKey       = isHumanized ? 'artifacts.humanized' : 'artifacts.chapters';
-        const chapters    = isHumanized ? normArr(arts.humanized) : normArr(arts.chapters);
-        const ch          = chapters[chapterIndex] || {};
-        const chSpreads   = normArr(ch.spreads);
-        if (chSpreads[spreadIndex]) {
-          chSpreads[spreadIndex] = { ...chSpreads[spreadIndex], text: snapshot.text };
-          chapters[chapterIndex] = { ...ch, spreads: chSpreads };
-        } else {
-          chapters[chapterIndex] = { ...ch, text: snapshot.text };
-        }
-        set[dbKey] = chapters;
-      }
-    } else if (type === 'image' && snapshot.imageUrl) {
-      if (arts.spreadOnly) {
-        const ills = normArr(arts.spreadIllustrations);
-        ills[spreadIndex] = { ...ills[spreadIndex], imageUrl: snapshot.imageUrl };
-        set['artifacts.spreadIllustrations'] = ills;
-      } else {
-        const illustrations = normArr(arts.illustrations);
-        const illCh         = illustrations[chapterIndex] || {};
-        const illSpreads    = normArr(illCh.spreads);
-        illSpreads[spreadIndex] = { ...illSpreads[spreadIndex], imageUrl: snapshot.imageUrl };
-        illCh.spreads           = illSpreads;
-        illustrations[chapterIndex] = illCh;
-        set['artifacts.illustrations'] = illustrations;
-      }
+    if (!['text', 'image'].includes(type)) {
+      throw new ValidationError('type must be text or image');
     }
 
-    set[`artifacts.pageEdits.${key}.status`]    = 'edited';
-    set[`artifacts.pageEdits.${key}.updatedAt`] = now;
+    const edit = ensurePageEdit(arts, key);
+    const versions = type === 'text' ? normArr(edit.textVersions) : normArr(edit.imageVersions);
+    const vNum = Number(version);
+    const found = versions.find(v => Number(v.version) === vNum);
 
-    await Project.findByIdAndUpdate(req.params.id, { $set: set });
+    if (!found) throw new ValidationError(`Version ${vNum} not found`);
+
+    const parsed = parsePageKey(key);
+
+    if (type === 'text' && parsed.type === 'spread') {
+      if (parsed.spreadOnly || arts.spreadOnly) {
+        const spreads = normArr(arts.spreads);
+        spreads[parsed.spreadIndex] = {
+          ...(spreads[parsed.spreadIndex] || {}),
+          text: found.text || '',
+          prompt: found.prompt || '',
+        };
+        arts.spreads = spreads;
+      } else {
+        const sourceKey = normArr(arts.humanized).length ? 'humanized' : 'chapters';
+        const chapters = normArr(arts[sourceKey]);
+        const chapter = chapters[parsed.chapterIndex] || {};
+        const spreads = normArr(chapter.spreads);
+        spreads[parsed.spreadIndex] = {
+          ...(spreads[parsed.spreadIndex] || {}),
+          text: found.text || '',
+          prompt: found.prompt || '',
+        };
+        chapters[parsed.chapterIndex] = { ...chapter, spreads };
+        arts[sourceKey] = chapters;
+      }
+      edit.currentTextVersion = vNum;
+    }
+
+    if (type === 'image') {
+      if (parsed.type === 'cover') {
+        if (!arts.cover) arts.cover = {};
+        if (parsed.side === 'front') {
+          arts.cover.frontUrl = found.imageUrl || '';
+          arts.cover.frontPrompt = found.prompt || '';
+        } else {
+          arts.cover.backUrl = found.imageUrl || '';
+          arts.cover.backPrompt = found.prompt || '';
+        }
+      } else if (parsed.spreadOnly || arts.spreadOnly) {
+        const ills = normArr(arts.spreadIllustrations);
+        ills[parsed.spreadIndex] = {
+          ...(ills[parsed.spreadIndex] || {}),
+          imageUrl: found.imageUrl || '',
+          prompt: found.prompt || '',
+        };
+        arts.spreadIllustrations = ills;
+      } else {
+        const illustrations = normArr(arts.illustrations);
+        const illCh = illustrations[parsed.chapterIndex] || { chapterNumber: parsed.chapterIndex + 1, spreads: [] };
+        const illSpreads = normArr(illCh.spreads);
+        illSpreads[parsed.spreadIndex] = {
+          ...(illSpreads[parsed.spreadIndex] || {}),
+          imageUrl: found.imageUrl || '',
+          prompt: found.prompt || '',
+        };
+        illCh.spreads = illSpreads;
+        illustrations[parsed.chapterIndex] = illCh;
+        arts.illustrations = illustrations;
+      }
+      edit.currentImageVersion = vNum;
+    }
+
+    edit.updatedAt = nowIso();
+    edit.status = 'edited';
+
+    project.markModified('artifacts');
+    await project.save();
+
     res.json({ message: 'Version restored', key, type, version: vNum });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/approve-all ────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Approve all story pages
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/pages/approve-all', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
-
+    const project = await getProjectForUser(req.params.id, req.user._id);
     const arts = project.artifacts || {};
-    const now  = new Date().toISOString();
-    const set  = {};
-
+    const now = nowIso();
     const keys = [];
+
     if (arts.spreadOnly) {
       normArr(arts.spreads).forEach((_, i) => keys.push(`s${i}`));
     } else {
-      const textContent = normArr(arts.humanized).length
-        ? normArr(arts.humanized)
-        : normArr(arts.chapters);
+      const textContent = getEffectiveTextContent(arts);
       textContent.forEach((ch, ci) => {
         const chSpreads = normArr(ch?.spreads);
         if (chSpreads.length) {
@@ -632,130 +1000,90 @@ router.post('/:id/pages/approve-all', async (req, res, next) => {
       });
     }
 
+    if (!arts.pageEdits) arts.pageEdits = {};
     keys.forEach(k => {
-      if (arts.pageEdits?.[k]?.status !== 'rejected') {
-        set[`artifacts.pageEdits.${k}.status`]     = 'approved';
-        set[`artifacts.pageEdits.${k}.approvedAt`] = now;
-        set[`artifacts.pageEdits.${k}.updatedAt`]  = now;
+      if (!arts.pageEdits[k]) {
+        arts.pageEdits[k] = {
+          status: 'approved',
+          approvedAt: now,
+          updatedAt: now,
+          textStyle: {},
+          imageStyle: {},
+          layout: 'text-bottom',
+          textVersions: [],
+          imageVersions: [],
+          currentTextVersion: 0,
+          currentImageVersion: 0,
+        };
+      } else if (arts.pageEdits[k].status !== 'rejected') {
+        arts.pageEdits[k].status = 'approved';
+        arts.pageEdits[k].approvedAt = now;
+        arts.pageEdits[k].updatedAt = now;
       }
     });
 
-    await Project.findByIdAndUpdate(req.params.id, { $set: set });
+    project.markModified('artifacts');
+    await project.save();
     res.json({ message: 'All pages approved', count: keys.length });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
-// ─── POST /api/projects/:id/pages/book-style ─────────────────────────────────
-// Save global editor style (Step 5) and optionally propagate to all pages
+// ─────────────────────────────────────────────────────────────────────────────
+// Save global editor style
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/:id/pages/book-style', async (req, res, next) => {
   try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
-
+    const project = await getProjectForUser(req.params.id, req.user._id);
+    const arts = project.artifacts || {};
     const { bookEditorStyle, applyToAll = false } = req.body;
+
     if (!bookEditorStyle) throw new ValidationError('bookEditorStyle is required');
 
-    const set = { 'artifacts.bookEditorStyle': bookEditorStyle };
+    arts.bookEditorStyle = clone(bookEditorStyle);
 
     if (applyToAll) {
-      const arts = project.artifacts || {};
       const keys = [];
+
       if (arts.spreadOnly) {
         normArr(arts.spreads).forEach((_, i) => keys.push(`s${i}`));
       } else {
-        const textContent = normArr(arts.humanized).length ? normArr(arts.humanized) : normArr(arts.chapters);
+        const textContent = getEffectiveTextContent(arts);
         textContent.forEach((ch, ci) => {
-          normArr(ch?.spreads).forEach((_, si) => keys.push(`ch${ci}_s${si}`));
-          if (!normArr(ch?.spreads).length) keys.push(`ch${ci}_s0`);
+          const spreads = normArr(ch?.spreads);
+          if (spreads.length) {
+            spreads.forEach((_, si) => keys.push(`ch${ci}_s${si}`));
+          } else {
+            keys.push(`ch${ci}_s0`);
+          }
         });
       }
+
       keys.forEach(k => {
-        set[`artifacts.pageEdits.${k}.textStyle`] = {
-          fontFamily:  bookEditorStyle.globalFont,
-          fontSize:    bookEditorStyle.globalFontSize,
-          color:       bookEditorStyle.globalFontColor,
-          bgColor:     bookEditorStyle.globalBgColor,
-          bgOpacity:   bookEditorStyle.globalBgOpacity,
-          textAlign:   bookEditorStyle.globalTextAlign,
+        const edit = ensurePageEdit(arts, k);
+        edit.textStyle = {
+          ...(edit.textStyle || {}),
+          fontFamily: bookEditorStyle.globalFont,
+          fontSize: bookEditorStyle.globalFontSize,
+          color: bookEditorStyle.globalFontColor,
+          bgColor: bookEditorStyle.globalBgColor,
+          bgOpacity: bookEditorStyle.globalBgOpacity,
+          textAlign: bookEditorStyle.globalTextAlign,
         };
-        set[`artifacts.pageEdits.${k}.layout`] = bookEditorStyle.globalLayout;
+        edit.layout = bookEditorStyle.globalLayout;
+        edit.updatedAt = nowIso();
       });
     }
 
-    await Project.findByIdAndUpdate(req.params.id, { $set: set });
+    project.markModified('artifacts');
+    await project.save();
+
     res.json({ message: 'Book style saved', applied: applyToAll });
-  } catch (e) { next(e); }
-});
-
-// ─── POST /api/projects/:id/pages/migrate ────────────────────────────────────
-// One-time migration: flatten old chapter-based data to spreads-only for age < 6
-
-router.post('/:id/pages/migrate', async (req, res, next) => {
-  try {
-    const project = await Project.findById(req.params.id);
-    if (!project) throw new NotFoundError();
-    if (!project.userId.equals(req.user._id)) throw new ForbiddenError();
-
-    const ageFirst = String(project.ageRange || '').match(/\d+/)?.[0];
-    const shouldBeSpreadsOnly = ageFirst ? Number(ageFirst) < 6 : false;
-    const arts = project.artifacts || {};
-
-    if (arts.spreadOnly) {
-      return res.json({ migrated: false, reason: 'Already in spreads-only mode' });
-    }
-    if (!shouldBeSpreadsOnly) {
-      return res.json({ migrated: false, reason: `Age ${project.ageRange} uses chapter mode` });
-    }
-
-    const textContent   = normArr(arts.humanized).length ? normArr(arts.humanized) : normArr(arts.chapters);
-    const illustrations = normArr(arts.illustrations);
-    const allSpreads    = [];
-    const allSpreadIlls = [];
-
-    textContent.forEach((ch, ci) => {
-      const chSpreads  = normArr(ch?.spreads);
-      const illCh      = illustrations[ci] || {};
-      const illSpreads = normArr(illCh.spreads);
-
-      if (chSpreads.length) {
-        chSpreads.forEach((s, si) => {
-          const idx = allSpreads.length;
-          allSpreads.push({
-            spreadIndex: idx, text: s.text || '', prompt: s.prompt || '',
-            illustrationHint: s.illustrationHint || '', textPosition: s.textPosition || 'bottom',
-            charactersInScene: s.charactersInScene || [], characterEmotion: s.characterEmotion || {},
-            sceneEnvironment: s.sceneEnvironment || 'indoor',
-          });
-          allSpreadIlls.push({
-            spreadIndex: idx,
-            imageUrl:    illSpreads[si]?.imageUrl || '',
-            prompt:      illSpreads[si]?.prompt   || '',
-            variants:    normArr(illSpreads[si]?.variants),
-          });
-        });
-      } else if (ch?.text) {
-        const idx     = allSpreads.length;
-        const variant = illCh.variants?.[illCh.selectedVariantIndex ?? 0] || {};
-        allSpreads.push({
-          spreadIndex: idx, text: ch.text, prompt: ch.prompt || '',
-          illustrationHint: '', textPosition: 'bottom',
-        });
-        allSpreadIlls.push({ spreadIndex: idx, imageUrl: variant.imageUrl || '', prompt: variant.prompt || '' });
-      }
-    });
-
-    await Project.findByIdAndUpdate(req.params.id, {
-      $set: {
-        'artifacts.spreads':             allSpreads,
-        'artifacts.spreadIllustrations': allSpreadIlls,
-        'artifacts.spreadOnly':          true,
-      },
-    });
-
-    res.json({ migrated: true, spreadCount: allSpreads.length, ageRange: project.ageRange });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 export default router;

@@ -1295,6 +1295,102 @@ Respond ONLY with:
 // HUMANIZE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// function buildHumanizePrompt({ project, kb, characters }, chapterIndex) {
+//   const profile = getAgeProfile(project.ageRange);
+//   const arabic = buildArabicBlock();
+//   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
+//   const chaptersArr = normArr(project.artifacts?.chapters);
+//   const chapter = chaptersArr[chapterIndex];
+
+//   const system = `You are a children's book editor for Islamic content, ages ${project.ageRange}.
+// ${characterBlock(characters)}
+// ${arabic}
+// Output ONLY raw valid JSON.`;
+
+//   if (profile.mode === 'chapter-book') {
+//     const chapterText = String(chapter?.chapterText || chapter?.text || '');
+
+//     return {
+//       system,
+//       prompt: `Polish Chapter ${chapterIndex + 1} of "${project.title}".
+
+// Current chapter title: ${chapter?.chapterTitle || `Chapter ${chapterIndex + 1}`}
+
+// Current chapter text:
+// ${chapterText}
+
+// Editing rules:
+// - Keep plot and meaning intact
+// - Preserve approved characters exactly
+// - Preserve illustration intent
+// - Improve prose quality, atmosphere, dialogue, and flow
+// - Keep Islamic values natural
+// - Avoid: ${avoidTopics}
+
+// Respond ONLY with:
+// {
+//   "chapterNumber": ${chapterIndex + 1},
+//   "chapterTitle": "${chapter?.chapterTitle || `Chapter ${chapterIndex + 1}`}",
+//   "chapterText": "improved full prose chapter",
+//   "chapterSummary": "improved 2-3 sentence summary",
+//   "islamicMoment": "${chapter?.islamicMoment || ''}",
+//   "illustrationMoments": [
+//     {
+//       "momentTitle": "string",
+//       "illustrationHint": "string",
+//       "charactersInScene": ["exact approved names only"],
+//       "poseKey": "optional pose key",
+//       "characterEmotion": { "ExactName": "emotion" },
+//       "sceneEnvironment": "indoor|outdoor|mixed",
+//       "timeOfDay": "morning|afternoon|evening|night",
+//       "continuityNotes": "brief continuity note",
+//       "cameraHint": "wide|medium|close|over-shoulder|full-body"
+//     }
+//   ],
+//   "changesMade": ["list of specific improvements"]
+// }`
+//     };
+//   }
+
+//   if (profile.mode === 'picture-book') {
+//     return {
+//       system,
+//       prompt: `Polish picture book chapter ${chapterIndex + 1} of "${project.title}".
+// Current spreads: ${JSON.stringify(chapter?.spreads || [], null, 2)}
+// Avoid: ${avoidTopics}
+// MAX ${profile.maxWords} words per spread.
+// Preserve approved character names and scene intent.
+
+// Respond ONLY with:
+// {
+//   "chapterNumber": ${chapterIndex + 1},
+//   "chapterTitle": "string",
+//   "chapterSummary": "1-2 sentence summary",
+//   "islamicMoment": "string",
+//   "spreads": [
+//     {
+//       "spreadIndex": 0,
+//       "text": "improved text, max ${profile.maxWords} words",
+//       "prompt": "updated instruction",
+//       "illustrationHint": "string",
+//       "charactersInScene": ["exact approved names only"],
+//       "poseKey": "optional pose key",
+//       "textPosition": "bottom|top",
+//       "characterEmotion": { "ExactName": "emotion" },
+//       "sceneEnvironment": "indoor|outdoor|mixed",
+//       "timeOfDay": "morning|afternoon|evening|night",
+//       "continuityNotes": "brief continuity note",
+//       "cameraHint": "wide|medium|close|over-shoulder|full-body"
+//     }
+//   ],
+//   "changesMade": ["list of changes"]
+// }`
+//     };
+//   }
+
+//   return buildSpreadHumanizePrompt({ project, characters, kb });
+// }
+
 function buildHumanizePrompt({ project, kb, characters }, chapterIndex) {
   const profile = getAgeProfile(project.ageRange);
   const arabic = buildArabicBlock();
@@ -1302,7 +1398,11 @@ function buildHumanizePrompt({ project, kb, characters }, chapterIndex) {
   const chaptersArr = normArr(project.artifacts?.chapters);
   const chapter = chaptersArr[chapterIndex];
 
-  const system = `You are a children's book editor for Islamic content, ages ${project.ageRange}.
+  const system = `You are a professional children's book editor specializing in Islamic content for ages ${project.ageRange}.
+
+Your job is to REWRITE and IMPROVE the given chapter prose. You MUST make meaningful changes.
+DO NOT return the same text. DO NOT copy the original.
+
 ${characterBlock(characters)}
 ${arabic}
 Output ONLY raw valid JSON.`;
@@ -1312,26 +1412,36 @@ Output ONLY raw valid JSON.`;
 
     return {
       system,
-      prompt: `Polish Chapter ${chapterIndex + 1} of "${project.title}".
+      prompt: `HUMANIZE and IMPROVE Chapter ${chapterIndex + 1} of "${project.title}".
 
-Current chapter title: ${chapter?.chapterTitle || `Chapter ${chapterIndex + 1}`}
-
-Current chapter text:
+ORIGINAL CHAPTER TEXT TO REWRITE:
+---
 ${chapterText}
+---
 
-Editing rules:
-- Keep plot and meaning intact
-- Preserve approved characters exactly
-- Preserve illustration intent
-- Improve prose quality, atmosphere, dialogue, and flow
-- Keep Islamic values natural
+YOU MUST make ALL of these improvements:
+1. Replace robotic or repetitive transitions with natural varied flow
+2. Add sensory details — sounds, textures, smells, light, temperature
+3. Make dialogue feel natural and age-appropriate for ${project.ageRange}
+4. Vary sentence length and rhythm — mix short punchy sentences with longer descriptive ones
+5. Deepen emotional moments — show feelings through actions, not just statements
+6. Strengthen scene-setting at chapter opening
+7. Make the ending beat more resonant and memorable
+8. Keep all Islamic values, Arabic phrases, and dua moments exactly as-is
+9. Keep all approved character names exactly as-is
+10. Keep the same plot events and chapter goal
+
+RULES:
+- The rewritten chapterText MUST be noticeably different from the original
+- Length must remain ${profile.minChapterWords}-${profile.maxChapterWords} words
 - Avoid: ${avoidTopics}
+- DO NOT reproduce the original text verbatim
 
-Respond ONLY with:
+Respond ONLY with this JSON:
 {
   "chapterNumber": ${chapterIndex + 1},
   "chapterTitle": "${chapter?.chapterTitle || `Chapter ${chapterIndex + 1}`}",
-  "chapterText": "improved full prose chapter",
+  "chapterText": "FULLY REWRITTEN prose chapter — must be meaningfully different from original",
   "chapterSummary": "improved 2-3 sentence summary",
   "islamicMoment": "${chapter?.islamicMoment || ''}",
   "illustrationMoments": [
@@ -1339,7 +1449,7 @@ Respond ONLY with:
       "momentTitle": "string",
       "illustrationHint": "string",
       "charactersInScene": ["exact approved names only"],
-      "poseKey": "optional pose key",
+      "poseKey": "standing|walking|running|thinking|sitting|waving|reading-quran|praying-salah|laughing|sad|surprised|kneeling",
       "characterEmotion": { "ExactName": "emotion" },
       "sceneEnvironment": "indoor|outdoor|mixed",
       "timeOfDay": "morning|afternoon|evening|night",
@@ -1347,7 +1457,14 @@ Respond ONLY with:
       "cameraHint": "wide|medium|close|over-shoulder|full-body"
     }
   ],
-  "changesMade": ["list of specific improvements"]
+  "changesMade": [
+    "list at least 5 specific improvements you made",
+    "e.g. Added sensory detail to opening scene",
+    "e.g. Rewrote Zubair's dialogue to sound more natural",
+    "e.g. Varied sentence length in marketplace scene",
+    "e.g. Deepened emotional moment when wallet is returned",
+    "e.g. Strengthened chapter ending beat"
+  ]
 }`
     };
   }
@@ -1355,11 +1472,19 @@ Respond ONLY with:
   if (profile.mode === 'picture-book') {
     return {
       system,
-      prompt: `Polish picture book chapter ${chapterIndex + 1} of "${project.title}".
-Current spreads: ${JSON.stringify(chapter?.spreads || [], null, 2)}
+      prompt: `REWRITE and IMPROVE picture book chapter ${chapterIndex + 1} of "${project.title}".
+
+ORIGINAL SPREADS:
+${JSON.stringify(chapter?.spreads || [], null, 2)}
+
+YOU MUST improve EVERY spread text by:
+1. Making sentences more vivid and warm
+2. Adding sensory or emotional detail
+3. Improving rhythm and flow
+4. Keeping max ${profile.maxWords} words per spread
+5. Keeping all approved character names exactly
+
 Avoid: ${avoidTopics}
-MAX ${profile.maxWords} words per spread.
-Preserve approved character names and scene intent.
 
 Respond ONLY with:
 {
@@ -1370,7 +1495,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "improved text, max ${profile.maxWords} words",
+      "text": "REWRITTEN improved text, max ${profile.maxWords} words — must differ from original",
       "prompt": "updated instruction",
       "illustrationHint": "string",
       "charactersInScene": ["exact approved names only"],
@@ -1383,7 +1508,7 @@ Respond ONLY with:
       "cameraHint": "wide|medium|close|over-shoulder|full-body"
     }
   ],
-  "changesMade": ["list of changes"]
+  "changesMade": ["list at least 3 specific improvements made"]
 }`
     };
   }
@@ -1393,27 +1518,84 @@ Respond ONLY with:
 
 // ─── Spread humanize ──────────────────────────────────────────────────────────
 
+// function buildSpreadHumanizePrompt({ project, characters, kb }) {
+//   const profile = getAgeProfile(project.ageRange);
+//   const spreads = normArr(project.artifacts?.spreads || []);
+//   const arabic = buildArabicBlock();
+//   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
+
+//   const system = `You are an expert Islamic picture book editor for ages ${project.ageRange}.
+// SPREADS-ONLY book — ${spreads.length} pages, NO chapters.
+// EACH "text" MUST BE one complete, grammatically correct sentence (max ${profile.maxWords} words).
+// Output ONLY raw valid JSON.
+// ${characterBlock(characters)}
+// ${arabic}`;
+
+//   return {
+//     system,
+//     prompt: `Polish all ${spreads.length} page texts for "${project.title}".
+// Avoid: ${avoidTopics}
+// Keep all structure and approved character names.
+// Improve text clarity without changing scene meaning.
+
+// Current spreads: ${JSON.stringify(spreads, null, 2)}
+
+// Respond ONLY with:
+// {
+//   "spreadOnly": true,
+//   "spreads": [
+//     {
+//       "spreadIndex": 0,
+//       "text": "ONE complete grammatical sentence, max ${profile.maxWords} words",
+//       "prompt": "copy or refine original",
+//       "illustrationHint": "same scene intent",
+//       "textPosition": "bottom|top",
+//       "charactersInScene": ["exact approved names only"],
+//       "poseKey": "optional pose key",
+//       "characterEmotion": { "ExactName": "emotion" },
+//       "sceneEnvironment": "indoor|outdoor|mixed",
+//       "timeOfDay": "morning|afternoon|evening|night",
+//       "continuityNotes": "brief continuity note",
+//       "cameraHint": "wide|medium|close|over-shoulder|full-body"
+//     }
+//   ],
+//   "changesMade": ["what improved"]
+// }`
+//   };
+// }
+
 function buildSpreadHumanizePrompt({ project, characters, kb }) {
   const profile = getAgeProfile(project.ageRange);
   const spreads = normArr(project.artifacts?.spreads || []);
   const arabic = buildArabicBlock();
   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
 
-  const system = `You are an expert Islamic picture book editor for ages ${project.ageRange}.
+  const system = `You are a professional Islamic picture book editor for ages ${project.ageRange}.
 SPREADS-ONLY book — ${spreads.length} pages, NO chapters.
+
+You MUST rewrite and improve every page text. DO NOT return the same text.
 EACH "text" MUST BE one complete, grammatically correct sentence (max ${profile.maxWords} words).
-Output ONLY raw valid JSON.
+
 ${characterBlock(characters)}
-${arabic}`;
+${arabic}
+Output ONLY raw valid JSON.`;
 
   return {
     system,
-    prompt: `Polish all ${spreads.length} page texts for "${project.title}".
-Avoid: ${avoidTopics}
-Keep all structure and approved character names.
-Improve text clarity without changing scene meaning.
+    prompt: `REWRITE and IMPROVE all ${spreads.length} page texts for "${project.title}".
 
-Current spreads: ${JSON.stringify(spreads, null, 2)}
+ORIGINAL SPREADS:
+${JSON.stringify(spreads, null, 2)}
+
+YOU MUST improve EVERY spread by:
+1. Making sentences warmer and more vivid
+2. Improving rhythm — vary short and longer phrases
+3. Adding one specific sensory or emotional detail per page
+4. Ensuring each sentence flows naturally from the previous
+5. Keeping all approved character names exactly as-is
+6. Keeping max ${profile.maxWords} words per page
+
+Avoid: ${avoidTopics}
 
 Respond ONLY with:
 {
@@ -1421,9 +1603,9 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "ONE complete grammatical sentence, max ${profile.maxWords} words",
-      "prompt": "copy or refine original",
-      "illustrationHint": "same scene intent",
+      "text": "ONE REWRITTEN complete grammatical sentence — must differ from original, max ${profile.maxWords} words",
+      "prompt": "copy or refine original instruction",
+      "illustrationHint": "same scene intent, can be improved",
       "textPosition": "bottom|top",
       "charactersInScene": ["exact approved names only"],
       "poseKey": "optional pose key",
@@ -1434,7 +1616,7 @@ Respond ONLY with:
       "cameraHint": "wide|medium|close|over-shoulder|full-body"
     }
   ],
-  "changesMade": ["what improved"]
+  "changesMade": ["list at least 3 specific improvements made across the spreads"]
 }`
   };
 }
