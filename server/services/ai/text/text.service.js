@@ -243,12 +243,93 @@ Description: ${universe.description || 'Islamic family stories'}
 Art style: ${universe.artStyle || 'Pixar 3D animation'}`;
 }
 
-function kbBlock(kb) {
+function kbBlock(kb, opts = {}) {
   if (!kb) return '';
-  return `KNOWLEDGE BASE: ${kb.name}
-Islamic Values: ${(kb.islamicValues || []).join(', ')}
-Avoid Topics: ${(kb.avoidTopics || []).join(', ')}
-Illustration Rules: ${(kb.illustrationRules || []).join('; ')}`;
+  const lines = [`KNOWLEDGE BASE: ${kb.name}`];
+
+  if (kb.islamicValues?.length)    lines.push(`Islamic Values: ${kb.islamicValues.join(', ')}`);
+  if (kb.avoidTopics?.length)      lines.push(`Avoid Topics: ${kb.avoidTopics.join(', ')}`);
+  if (kb.illustrationRules?.length) lines.push(`Illustration Rules: ${kb.illustrationRules.join('; ')}`);
+  if (kb.customRules)              lines.push(`Custom Rules: ${kb.customRules}`);
+
+  // ── Themes ──────────────────────────────────────────────────────────────
+  if (kb.themes?.length) {
+    lines.push('Themes:');
+    for (const t of kb.themes) {
+      lines.push(`  • ${t.title}: ${t.coreConflict || ''} | Symbols: ${(t.anchorSymbols || []).join(', ')}`);
+    }
+  }
+
+  // ── Literary devices ────────────────────────────────────────────────────
+  if (kb.literaryDevices) {
+    const ld = kb.literaryDevices;
+    if (ld.symbolAnchors?.length)
+      lines.push(`Symbol Anchors: ${ld.symbolAnchors.map(s => `${s.symbol}=${s.meaning}`).join('; ')}`);
+    if (ld.approvedDevices?.length)
+      lines.push(`Approved Literary Devices: ${ld.approvedDevices.join(', ')}`);
+    if (ld.avoidDevices?.length)
+      lines.push(`Avoid Devices: ${ld.avoidDevices.join(', ')}`);
+  }
+
+  // ── Book formatting (text-gen guide) ───────────────────────────────────
+  if (opts.ageGroup === 'middleGrade' && kb.bookFormatting?.middleGrade) {
+    const f = kb.bookFormatting.middleGrade;
+    if (f.wordCount)      lines.push(`Target Word Count: ${f.wordCount}`);
+    if (f.chapterRange)   lines.push(`Chapter Count: ${f.chapterRange}`);
+    if (f.sceneLength)    lines.push(`Scene Length: ${f.sceneLength}`);
+    if (f.chapterRhythm?.length) lines.push(`Chapter Rhythm: ${f.chapterRhythm.join(' → ')}`);
+  }
+  if (opts.ageGroup === 'junior' && kb.bookFormatting?.junior) {
+    const f = kb.bookFormatting.junior;
+    if (f.wordCount)    lines.push(`Target Word Count: ${f.wordCount}`);
+    if (f.pageFlow?.length) lines.push(`Page Flow: ${f.pageFlow.join(' → ')}`);
+  }
+
+  // ── Under-6 / Spreads-only design prefs ────────────────────────────────
+  if (opts.ageGroup === 'underSix' && kb.underSixDesign) {
+    const u = kb.underSixDesign;
+    if (u.maxWordsPerSpread) lines.push(`Max Words Per Spread: ${u.maxWordsPerSpread}`);
+    if (u.pageLayout)        lines.push(`Page Layout: ${u.pageLayout}`);
+    if (u.fontStyle)         lines.push(`Font Style: ${u.fontStyle}`);
+    if (u.reflectionPrompt)  lines.push(`Reflection Prompt: ${u.reflectionPrompt}`);
+    if (u.specialRules?.length) lines.push(`Special Rules: ${u.specialRules.join('; ')}`);
+  }
+
+  // ── Character guides (voice + faith, matched by name/id) ───────────────
+  if (opts.characterNames?.length && kb.characterGuides?.length) {
+    const names = opts.characterNames.map(n => n.toLowerCase());
+    const matched = kb.characterGuides.filter(
+      g => names.includes((g.characterName || '').toLowerCase())
+    );
+    for (const g of matched) {
+      lines.push(`\nCharacter Guide – ${g.characterName}:`);
+      if (g.speakingStyle)         lines.push(`  Speaking Style: ${g.speakingStyle}`);
+      if (g.dialogueExamples?.length) lines.push(`  Dialogue Examples: ${g.dialogueExamples.join(' | ')}`);
+      if (g.moreInfo)              lines.push(`  Background: ${g.moreInfo}`);
+      if (g.faithGuide) {
+        const f = g.faithGuide;
+        if (f.faithTone)              lines.push(`  Faith Tone: ${f.faithTone}`);
+        if (f.islamicTraits?.length)  lines.push(`  Islamic Traits: ${f.islamicTraits.join(', ')}`);
+        if (f.faithExpressions?.length) lines.push(`  Faith Expressions: ${f.faithExpressions.join('; ')}`);
+        if (f.duaStyle)               lines.push(`  Du'a Style: ${f.duaStyle}`);
+        if (f.faithExamples?.length)  lines.push(`  Faith Examples: ${f.faithExamples.join(' | ')}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/** Build opts for kbBlock from project + loaded character array. */
+function buildKbOpts(project, characters = []) {
+  const profile = getAgeProfile(project?.ageRange);
+  let ageGroup = 'middleGrade';
+  if (profile.mode === 'spreads-only') ageGroup = 'underSix';
+  else if (profile.mode === 'picture-book') ageGroup = 'junior';
+  return {
+    ageGroup,
+    characterNames: characters.map(c => c.name).filter(Boolean),
+  };
 }
 
 function characterBlock(characters) {
@@ -752,7 +833,7 @@ Book Format:
 ${formatDesc}
 
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, characters))}
 ${charBlock}
 ${arabic}
 
@@ -872,7 +953,7 @@ Age: ${project.ageRange} — Mode: ${profile.mode}
 ${textRules}
 
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, characters))}
 ${charBlock}
 ${arabic}
 
@@ -937,7 +1018,7 @@ function buildPictureBookChapterPrompt({ project, universe, characters, kb }, ch
 PICTURE BOOK for ages ${project.ageRange}. MAX ${profile.maxWords} words per spread.
 Each spread = one illustrated page with 1-2 short sentences.
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, sceneChars))}
 ${characterBlock(sceneChars)}
 ${arabic}
 
@@ -1023,7 +1104,7 @@ CRITICAL WRITING RULES:
 - End with curiosity, suspense, discovery, or emotional shift
 
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, sceneChars))}
 ${characterBlock(sceneChars)}
 ${arabic}
 
@@ -1101,7 +1182,7 @@ SENTENCE RULES:
 - The ${count} sentences together should tell a complete story arc
 
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, characters))}
 ${characterBlock(characters)}
 ${arabic}
 
@@ -1148,7 +1229,7 @@ function buildOutlinePrompt({ project, universe, characters, kb }) {
 
   const system = `You are an expert Islamic children's book author.
 ${universeBlock(universe)}
-${kbBlock(kb)}
+${kbBlock(kb, buildKbOpts(project, characters))}
 ${characterBlock(characters)}
 ${arabic}
 
@@ -1269,13 +1350,13 @@ Respond ONLY with:
 
 // ─── Islamic Theme Page ───────────────────────────────────────────────────────
 
-function buildThemePagePrompt({ project, kb }) {
+function buildThemePagePrompt({ project, kb, characters = [] }) {
   const arabic = buildArabicBlock();
   return {
     system: `You are an Islamic educator for children ages ${project.ageRange}. Output ONLY raw valid JSON. ${arabic}`,
     prompt: `Create Islamic theme reference page for "${project.title}".
 Objective: ${project.learningObjective || 'Islamic values'}
-${kb ? kbBlock(kb) : ''}
+${kb ? kbBlock(kb, buildKbOpts(project, characters)) : ''}
 Respond ONLY with:
 {
   "sectionTitle": "string",

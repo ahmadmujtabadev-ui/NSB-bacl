@@ -1,6 +1,7 @@
 import { Project } from '../../../models/Project.js';
 import { Universe } from '../../../models/Universe.js';
 import { Character } from '../../../models/Character.js';
+import { KnowledgeBase } from '../../../models/KnowledgeBase.js';
 import { NotFoundError } from '../../../errors.js';
 import { generateImage } from './image.providers.js';
 
@@ -194,19 +195,39 @@ function formatAccessories(vd = {}) {
   return safeStr(vd.accessories) || 'none';
 }
 
-function buildProjectStyleLock(project, universeStyle) {
+function buildProjectStyleLock(project, universeStyle, kb, ageMode) {
   const bs = project.bookStyle || {};
-  return `
-STYLE LOCK — MUST stay consistent across the whole book:
-• Illustration style: ${universeStyle || bs.artStyle || 'pixar-3d'}
-• Color palette: ${bs.colorPalette || 'warm-pastels'}
-• Lighting style: ${bs.lightingStyle || 'warm-golden'}
-• Background style: ${bs.backgroundStyle || 'mixed'}
-• Indoor environment: ${bs.indoorRoomDescription || 'warm cozy room'}
-• Outdoor environment: ${bs.outdoorDescription || 'pleasant natural outdoor scene'}
-• Islamic decor style: ${bs.islamicDecorStyle || 'subtle'}
-• Keep same rendering quality, same shading language, same proportions, same visual universe in every image.
-`.trim();
+
+  // Pull per-age-group background rules from KB if available
+  const bgKey = ageMode === 'underSix' ? 'junior'
+    : ageMode === 'junior' ? 'junior'
+    : ageMode === 'saeeda' ? 'saeeda'
+    : 'middleGrade';
+  const kbBg = kb?.backgroundSettings?.[bgKey];
+
+  const lines = [
+    'STYLE LOCK — MUST stay consistent across the whole book:',
+    `• Illustration style: ${universeStyle || bs.artStyle || 'pixar-3d'}`,
+    `• Color palette: ${bs.colorPalette || kbBg?.colorStyle || 'warm-pastels'}`,
+    `• Lighting style: ${bs.lightingStyle || kbBg?.lightingStyle || 'warm-golden'}`,
+    `• Background style: ${bs.backgroundStyle || 'mixed'}`,
+    `• Indoor environment: ${bs.indoorRoomDescription || 'warm cozy room'}`,
+    `• Outdoor environment: ${bs.outdoorDescription || 'pleasant natural outdoor scene'}`,
+    `• Islamic decor style: ${bs.islamicDecorStyle || 'subtle'}`,
+  ];
+
+  if (kbBg?.tone)        lines.push(`• Scene tone: ${kbBg.tone}`);
+  if (kbBg?.locations?.length) lines.push(`• Approved locations: ${kbBg.locations.join(', ')}`);
+  if (kbBg?.keyFeatures?.length) lines.push(`• Background key features: ${kbBg.keyFeatures.join('; ')}`);
+  if (kbBg?.additionalNotes) lines.push(`• Background notes: ${kbBg.additionalNotes}`);
+
+  if (kb?.backgroundSettings?.avoidBackgrounds?.length)
+    lines.push(`• AVOID backgrounds: ${kb.backgroundSettings.avoidBackgrounds.join(', ')}`);
+  if (kb?.backgroundSettings?.universalRules)
+    lines.push(`• Universal rule: ${kb.backgroundSettings.universalRules}`);
+
+  lines.push('• Keep same rendering quality, same shading language, same proportions, same visual universe in every image.');
+  return lines.join('\n');
 }
 
 function describeCharacter(c) {
@@ -729,9 +750,24 @@ function buildCoverPrompt({
   universeStyle,
   outfitQuickRef,
   sceneCharacters,
+  kb,
+  ageMode,
 }) {
-  const styleLock = buildProjectStyleLock(project, universeStyle);
+  const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const cd = kb?.coverDesign || {};
+
+  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
+    ? (cd.atmosphere?.junior || 'Bright, joyful colors; objects that relate to plot')
+    : ageMode === 'saeeda'
+      ? (cd.atmosphere?.saeeda || 'Dreamlike macro-world background')
+      : (cd.atmosphere?.middleGrade || 'Slightly cinematic lighting; natural environment');
+
+  const typographyNote = ageMode === 'underSix' || ageMode === 'junior'
+    ? (cd.typography?.junior || 'Bold, rounded, friendly fonts')
+    : ageMode === 'saeeda'
+      ? (cd.typography?.saeeda || '')
+      : (cd.typography?.middleGrade || 'Serif or elegant sans-serif');
 
   return [
     `Front cover illustration for Islamic children's book "${bookTitle}".`,
@@ -743,7 +779,15 @@ function buildCoverPrompt({
     characterLockBlock,
     poseRefBlock,
     `Only these characters may appear: ${allowedNames || 'main characters only'}.`,
-    'Scene: warm, inviting, memorable hero image with the main character(s) in a clean strong composition.',
+    cd.characterComposition?.length
+      ? `Character composition rules: ${cd.characterComposition.join('; ')}.`
+      : 'Scene: warm, inviting, memorable hero image with the main character(s) in a clean strong composition.',
+    `Visual atmosphere: ${atmosphereNote}.`,
+    typographyNote ? `Typography feel: ${typographyNote}.` : null,
+    cd.optionalAddons?.length ? `Optional addons: ${cd.optionalAddons.join(', ')}.` : null,
+    cd.islamicMotifs?.length ? `Islamic motifs: ${cd.islamicMotifs.join(', ')}.` : null,
+    cd.avoidCover?.length ? `AVOID on cover: ${cd.avoidCover.join(', ')}.` : null,
+    cd.extraNotes || null,
     'Portrait cover composition, full bleed, polished and consistent.',
     'No title text, no author text, no watermark, no letters.',
   ].filter(Boolean).join('\n\n');
@@ -757,8 +801,10 @@ function buildBackCoverPrompt({
   universeStyle,
   outfitQuickRef,
   sceneCharacters,
+  kb,
+  ageMode,
 }) {
-  const styleLock = buildProjectStyleLock(project, universeStyle);
+  const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
 
   return [
@@ -974,8 +1020,11 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
 
-  const universe = project.universeId ? await Universe.findById(project.universeId) : null;
-  const allCharacters = await loadUniverseCharacters(project);
+  const [universe, kb, allCharacters] = await Promise.all([
+    project.universeId ? Universe.findById(project.universeId) : null,
+    project.knowledgeBaseId ? KnowledgeBase.findById(project.knowledgeBaseId) : null,
+    loadUniverseCharacters(project),
+  ]);
   const universeStyle = style || universe?.artStyle || project.bookStyle?.artStyle || 'pixar-3d';
 
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
@@ -1095,6 +1144,8 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
           universeStyle,
           outfitQuickRef,
           sceneCharacters,
+          kb,
+          ageMode: getAgeMode(project.ageRange),
         });
 
         const result = await generateImageSafe(project, {
@@ -1350,6 +1401,8 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         universeStyle,
         outfitQuickRef,
         sceneCharacters,
+        kb,
+        ageMode: getAgeMode(project.ageRange),
       });
 
       const result = await generateImageSafe(project, {
@@ -1429,8 +1482,11 @@ export async function generateStageImage({
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
 
-  const universe = project.universeId ? await Universe.findById(project.universeId) : null;
-  const allCharacters = await loadUniverseCharacters(project);
+  const [universe, kb, allCharacters] = await Promise.all([
+    project.universeId ? Universe.findById(project.universeId) : null,
+    project.knowledgeBaseId ? KnowledgeBase.findById(project.knowledgeBaseId) : null,
+    loadUniverseCharacters(project),
+  ]);
 
   const universeStyle = style || universe?.artStyle || project.bookStyle?.artStyle || 'pixar-3d';
 
@@ -1644,6 +1700,8 @@ export async function generateStageImage({
       universeStyle,
       outfitQuickRef,
       sceneCharacters,
+      kb,
+      ageMode: getAgeMode(project.ageRange),
     });
   } else if (task === 'back-cover') {
     sceneCharacters = allCharacters;
@@ -1674,6 +1732,8 @@ export async function generateStageImage({
       universeStyle,
       outfitQuickRef,
       sceneCharacters,
+      kb,
+      ageMode: getAgeMode(project.ageRange),
     });
   } else if (task === 'character-style') {
     let character = null;
