@@ -5,9 +5,10 @@
 import mongoose from 'mongoose';
 
 const schema = new mongoose.Schema({
-  userId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  universeId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Universe' },
-  characterIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Character' }],
+  userId:          { type: mongoose.Schema.Types.ObjectId, ref: 'User',          required: true, index: true },
+  universeId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Universe' },
+  knowledgeBaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'KnowledgeBase' },
+  characterIds:    [{ type: mongoose.Schema.Types.ObjectId, ref: 'Character' }],
 
   // ─── Core book metadata ───────────────────────────────────────────────────
   title:             { type: String, required: true, trim: true, maxlength: 200 },

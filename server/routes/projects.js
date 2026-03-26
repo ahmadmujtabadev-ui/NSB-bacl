@@ -138,7 +138,7 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const {
-      universeId, characterIds = [], title, ageRange, chapterCount,
+      universeId, knowledgeBaseId, characterIds = [], title, ageRange, chapterCount,
       template, learningObjective, authorName, trimSize, language,
       bookStyle, storyIdea,
     } = req.body;
@@ -168,6 +168,7 @@ router.post('/', async (req, res, next) => {
     const project = await Project.create({
       userId: req.user._id,
       universeId,
+      knowledgeBaseId: knowledgeBaseId || undefined,
       characterIds,
       title:             title.trim(),
       ageRange,

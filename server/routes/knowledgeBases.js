@@ -47,7 +47,12 @@ router.put('/:id', async (req, res, next) => {
     if (!kb) throw new NotFoundError('Knowledge base not found');
     if (!kb.userId.equals(req.user._id)) throw new ForbiddenError();
 
-    const fields = ['name', 'islamicValues', 'duas', 'vocabulary', 'illustrationRules', 'avoidTopics', 'customRules'];
+    const fields = [
+      'name', 'islamicValues', 'duas', 'vocabulary', 'illustrationRules', 'avoidTopics', 'customRules',
+      // New sections
+      'backgroundSettings', 'coverDesign', 'underSixDesign', 'characterGuides',
+      'literaryDevices', 'bookFormatting', 'themes',
+    ];
     fields.forEach(f => { if (req.body[f] !== undefined) kb[f] = req.body[f]; });
     await kb.save();
     res.json(kb);
