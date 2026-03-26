@@ -79,6 +79,8 @@ const schema = new mongoose.Schema(
 
       bodyBuild: { type: String, default: '' },
       heightFeel: { type: String, default: '' },
+      heightCm: { type: Number, default: 0, min: 0, max: 250 },
+      weightCategory: { type: String, default: '' }, // slim / average / stocky / heavy
 
       accessories: { type: [String], default: [] },
       paletteNotes: { type: String, default: '' },

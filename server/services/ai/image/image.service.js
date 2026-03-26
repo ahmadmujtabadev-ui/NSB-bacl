@@ -261,7 +261,10 @@ function describeCharacter(c) {
     `  Outfit rules: ${safeStr(vd.outfitRules) || 'N/A'}`,
     `  Outfit color lock: ${outfitColor}`,
     `  Body build: ${safeStr(vd.bodyBuild) || 'N/A'}`,
-    `  Height feel: ${safeStr(vd.heightFeel) || 'N/A'}`,
+    vd.heightCm > 0
+      ? `  Height: EXACTLY ${vd.heightCm}cm — LOCK THIS HEIGHT, must appear at this height relative to every other character in the scene`
+      : `  Height feel: ${safeStr(vd.heightFeel) || 'N/A'}`,
+    `  Weight/build category: ${safeStr(vd.weightCategory) || 'N/A'}`,
     `  Accessories: ${formatAccessories(vd)}`,
     `  Palette notes: ${safeStr(vd.paletteNotes) || 'none'}`,
     mod.hijabAlways ? `  Hijab: ALWAYS visible` : '',
@@ -303,6 +306,11 @@ function buildCharacterLockBlock(characters) {
   const approvedNames = characters.map((c) => c.name).join(', ');
   const descriptions = characters.map(describeCharacter).join('\n\n');
 
+  const masterNotes = characters
+    .filter((c) => c.promptConfig?.masterSystemNote)
+    .map((c) => `• ${c.name}: ${c.promptConfig.masterSystemNote.trim()}`)
+    .join('\n');
+
   return `
 CHARACTER IDENTITY LOCK — MUST BE FOLLOWED EXACTLY
 
@@ -311,6 +319,7 @@ ${approvedNames}
 
 Character details:
 ${descriptions}
+${masterNotes ? `\nCHARACTER CUSTOM RULES:\n${masterNotes}` : ''}
 
 Rules:
 • Use ONLY the approved characters needed for this scene
@@ -319,6 +328,21 @@ Rules:
 • Keep exact same face, age appearance, skin tone, eye color, hair/hijab, outfit, colors, and body proportions
 • Match references exactly while only changing pose, angle, expression, and action
 `.trim();
+}
+
+function buildScenePromptOverrides(characters = []) {
+  const prefixes = characters
+    .filter((c) => c.promptConfig?.scenePromptPrefix)
+    .map((c) => c.promptConfig.scenePromptPrefix.trim())
+    .filter(Boolean);
+  const suffixes = characters
+    .filter((c) => c.promptConfig?.scenePromptSuffix)
+    .map((c) => c.promptConfig.scenePromptSuffix.trim())
+    .filter(Boolean);
+  const parts = [];
+  if (prefixes.length) parts.push(`CHARACTER SCENE OVERRIDES:\n${prefixes.join('\n')}`);
+  if (suffixes.length) parts.push(suffixes.join('\n'));
+  return parts.join('\n') || '';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -710,6 +734,7 @@ function buildSpreadPrompt({
   const isYoung = minAge <= 6;
   const styleLock = buildProjectStyleLock(project, universeStyle);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
   const sceneInstruction = spreadText
     ? `SCENE TO ILLUSTRATE:
@@ -731,6 +756,7 @@ ${illustrationHint ? `Additional scene hint: ${illustrationHint}` : ''}`
     characterLockBlock,
     poseLockBlock,
     poseRefBlock,
+    sceneOverrides || null,
     `Only these characters may appear: ${allowedNames || 'scene characters only'}.`,
     sceneInstruction,
     isYoung
@@ -784,6 +810,8 @@ function buildCoverPrompt({
       : 'Scene: warm, inviting, memorable hero image with the main character(s) in a clean strong composition.',
     `Visual atmosphere: ${atmosphereNote}.`,
     typographyNote ? `Typography feel: ${typographyNote}.` : null,
+    cd.titlePlacement ? `Title placement rule: ${cd.titlePlacement}.` : null,
+    cd.brandingRules?.length ? `Branding rules: ${cd.brandingRules.join('; ')}.` : null,
     cd.optionalAddons?.length ? `Optional addons: ${cd.optionalAddons.join(', ')}.` : null,
     cd.islamicMotifs?.length ? `Islamic motifs: ${cd.islamicMotifs.join(', ')}.` : null,
     cd.avoidCover?.length ? `AVOID on cover: ${cd.avoidCover.join(', ')}.` : null,
@@ -806,6 +834,13 @@ function buildBackCoverPrompt({
 }) {
   const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const cd = kb?.coverDesign || {};
+
+  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
+    ? (cd.atmosphere?.junior || 'Bright, joyful colors')
+    : ageMode === 'saeeda'
+      ? (cd.atmosphere?.saeeda || 'Dreamlike macro-world background')
+      : (cd.atmosphere?.middleGrade || 'Slightly cinematic lighting; natural environment');
 
   return [
     `Back cover illustration for Islamic children's book "${bookTitle}".`,
@@ -818,6 +853,10 @@ function buildBackCoverPrompt({
     poseRefBlock,
     `Only these characters may appear: ${allowedNames || 'main characters only'}.`,
     'Scene: peaceful, concluding, calm emotional moment that complements the front cover.',
+    `Visual atmosphere: ${atmosphereNote}.`,
+    cd.islamicMotifs?.length ? `Islamic motifs: ${cd.islamicMotifs.join(', ')}.` : null,
+    cd.avoidCover?.length ? `AVOID on cover: ${cd.avoidCover.join(', ')}.` : null,
+    cd.extraNotes || null,
     'No text, no barcode, no letters, no watermark.',
   ].filter(Boolean).join('\n\n');
 }
@@ -838,6 +877,7 @@ function buildChapterBookIllustrationPrompt({
 }) {
   const styleLock = buildProjectStyleLock(project, universeStyle);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
   return [
     `Islamic middle-grade chapter book illustration for "${bookTitle}".`,
@@ -852,6 +892,7 @@ function buildChapterBookIllustrationPrompt({
     characterLockBlock,
     poseLockBlock,
     poseRefBlock,
+    sceneOverrides || null,
     `Only these characters may appear: ${allowedNames || 'scene characters only'}.`,
     `
 SCENE TO ILLUSTRATE:
@@ -879,6 +920,7 @@ function buildCharacterStylePrompt({
 }) {
   const vd = character.visualDNA || {};
   const mod = character.modestyRules || {};
+  const pc = character.promptConfig || {};
   const outfitColor = extractOutfitColor(vd);
   const styleLock = buildProjectStyleLock(project, selectedStyle);
 
@@ -887,6 +929,8 @@ function buildCharacterStylePrompt({
     : (safeStr(vd.gender) || 'child');
 
   return [
+    pc.portraitPromptPrefix ? pc.portraitPromptPrefix.trim() : null,
+    pc.masterSystemNote ? `CHARACTER NOTE: ${pc.masterSystemNote.trim()}` : null,
     `MASTER CHARACTER REFERENCE PORTRAIT for "${character.name}".`,
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
@@ -916,7 +960,8 @@ CHARACTER REFERENCE — MUST DEFINE FUTURE CONSISTENCY:
 • Outfit rules: ${safeStr(vd.outfitRules) || 'N/A'}
 • Outfit color lock: ${outfitColor}
 • Body build: ${safeStr(vd.bodyBuild) || 'N/A'}
-• Height feel: ${safeStr(vd.heightFeel) || 'N/A'}
+• Height: ${vd.heightCm > 0 ? `EXACTLY ${vd.heightCm}cm — LOCK THIS HEIGHT across all scenes` : (safeStr(vd.heightFeel) || 'N/A')}
+• Weight/build category: ${safeStr(vd.weightCategory) || 'N/A'}
 • Accessories: ${formatAccessories(vd)}
 • Palette notes: ${safeStr(vd.paletteNotes) || 'none'}
 ${mod.hijabAlways ? '• Hijab always visible' : ''}
@@ -932,6 +977,7 @@ PORTRAIT GOAL:
 • simple polished render
 `.trim(),
     'This image will be reused as a hard consistency anchor for all book illustrations.',
+    pc.portraitPromptSuffix ? pc.portraitPromptSuffix.trim() : null,
     'No text, no letters, no watermark.',
   ].filter(Boolean).join('\n\n');
 }
@@ -1016,7 +1062,7 @@ function generateImageSafe(project, params) {
 // Full book generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function generateBookIllustrations({ projectId, userId, style, seed, traceId }) {
+export async function generateBookIllustrations({ projectId, userId, style, seed, traceId, force = false }) {
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
 
@@ -1048,7 +1094,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
     const totalSpreads = allSpreads.length;
 
     for (let si = 0; si < totalSpreads; si++) {
-      if (existingSpreadIlls[si]?.imageUrl) continue;
+      if (!force && existingSpreadIlls[si]?.imageUrl) continue;
 
       const spread = allSpreads[si] || {};
       const { sceneCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
@@ -1208,7 +1254,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       selectedVariantIndex: 0,
     };
 
-    existing.spreads = normArr(existing.spreads);
+    existing.spreads = force ? [] : normArr(existing.spreads);
 
     if (pictureBook) {
       const spreads = normArr(chapterContent_?.spreads);
@@ -1478,6 +1524,7 @@ export async function generateStageImage({
   style,
   traceId,
   characterId,
+  compositionDirective = '',
 }) {
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
@@ -1762,6 +1809,11 @@ export async function generateStageImage({
       new Error(`Unknown image task: "${task}". Valid tasks: illustration, illustrations, cover, back-cover, character-style`),
       { code: 'UNKNOWN_TASK' }
     );
+  }
+
+  // Append composition directive for illustration variants (doesn't override character lock)
+  if (compositionDirective && task === 'illustration') {
+    prompt = `${prompt}\n\n${compositionDirective}`;
   }
 
   const trId = traceId || `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

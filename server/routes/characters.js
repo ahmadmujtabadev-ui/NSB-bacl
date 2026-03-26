@@ -89,6 +89,8 @@ function normalizeVisualDNA(visualDNA = {}, modestyRules = {}) {
 
     bodyBuild: visualDNA.bodyBuild || '',
     heightFeel: visualDNA.heightFeel || '',
+    heightCm: typeof visualDNA.heightCm === 'number' ? visualDNA.heightCm : 0,
+    weightCategory: visualDNA.weightCategory || '',
 
     accessories: Array.isArray(visualDNA.accessories) ? visualDNA.accessories : [],
     paletteNotes: visualDNA.paletteNotes || '',
@@ -154,9 +156,12 @@ function buildStrictCharacterDescription(c) {
     vd.outfitRules ? `- Legacy outfit rules: ${vd.outfitRules}` : '',
 
     ``,
-    `BODY LOCK:`,
+    `BODY LOCK — MUST BE ENFORCED IN EVERY IMAGE:`,
+    vd.heightCm > 0
+      ? `- Height: EXACTLY ${vd.heightCm}cm — enforce this relative to all other characters and objects in the scene`
+      : (vd.heightFeel ? `- Height feel: ${vd.heightFeel}` : ''),
+    vd.weightCategory ? `- Weight/body category: ${vd.weightCategory}` : '',
     vd.bodyBuild ? `- Build: ${vd.bodyBuild}` : '',
-    vd.heightFeel ? `- Height feel: ${vd.heightFeel}` : '',
 
     ``,
     `MODESTY RULES:`,
@@ -175,7 +180,7 @@ function buildStrictCharacterDescription(c) {
     `Speaking style: ${c.speakingStyle || 'warm and friendly'}`,
 
     ``,
-    `CONSISTENCY LAW: identical face, outfit, colors, hijab/hair, and proportions in every image.`,
+    `CONSISTENCY LAW: identical face, outfit, colors, hijab/hair, body build, and height in every image. Height must stay locked — do NOT change the character's size across scenes.`,
   ].filter(Boolean).join('\n');
 }
 
@@ -732,7 +737,7 @@ router.post('/:id/approve', async (req, res, next) => {
     }
 
     c.status = 'approved';
-    if (!c.masterReferenceUrl) c.masterReferenceUrl = c.imageUrl;
+    c.masterReferenceUrl = c.imageUrl; // always sync to latest portrait on approve
 
     await c.save();
     res.json(c);

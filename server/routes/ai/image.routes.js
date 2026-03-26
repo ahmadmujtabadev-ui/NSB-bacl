@@ -64,6 +64,7 @@ router.post('/generate', async (req, res, next) => {
     seed,
     style,
     variantCount = 1,
+    force = false,
     traceId: clientTraceId,
   } = req.body;
 
@@ -108,6 +109,7 @@ router.post('/generate', async (req, res, next) => {
         style,
         seed,
         traceId,
+        force: !!force,
       });
     }
 
