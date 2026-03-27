@@ -15,9 +15,9 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { name, description, seriesBible, artStyle, colorPalette, islamicRules, tags } = req.body;
+    const { name, description, seriesBible, artStyle, ageRange, tone, colorPalette, islamicRules, tags } = req.body;
     if (!name?.trim()) throw new ValidationError('name is required');
-    const universe = await Universe.create({ userId: req.user._id, name: name.trim(), description, seriesBible, artStyle, colorPalette, islamicRules, tags });
+    const universe = await Universe.create({ userId: req.user._id, name: name.trim(), description, seriesBible, artStyle, ageRange, tone, colorPalette, islamicRules, tags });
     res.status(201).json(universe);
   } catch (e) { next(e); }
 });
@@ -36,7 +36,7 @@ router.put('/:id', async (req, res, next) => {
     const u = await Universe.findById(req.params.id);
     if (!u) throw new NotFoundError('Universe not found');
     if (!u.userId.equals(req.user._id)) throw new ForbiddenError();
-    const fields = ['name', 'description', 'seriesBible', 'artStyle', 'colorPalette', 'islamicRules', 'tags'];
+    const fields = ['name', 'description', 'seriesBible', 'artStyle', 'ageRange', 'tone', 'colorPalette', 'islamicRules', 'tags'];
     fields.forEach(f => { if (req.body[f] !== undefined) u[f] = req.body[f]; });
     await u.save();
     res.json(u);

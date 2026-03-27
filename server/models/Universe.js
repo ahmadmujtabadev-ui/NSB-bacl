@@ -5,7 +5,9 @@ const schema = new mongoose.Schema({
   name:        { type: String, required: true, trim: true },
   description: String,
   seriesBible: String,
-  artStyle:    { type: String, enum: ['pixar-3d', 'watercolor', 'anime', 'manga', '2d-vector', 'paper-cutout'], default: 'pixar-3d' },
+  artStyle:    { type: String, default: 'pixar-3d' },
+  ageRange:    { type: String, default: '' },   // e.g. "4-7", "8-12"
+  tone:        { type: String, default: '' },   // e.g. "funny-adventurous", "calm-educational"
   colorPalette:{ type: [String], default: [] },
   islamicRules:{
     hijabAlways:  { type: Boolean, default: true },
