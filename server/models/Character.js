@@ -42,7 +42,6 @@ const schema = new mongoose.Schema(
 
     ageRange: { type: String, default: '' },
     traits: { type: [String], default: [] },
-    speakingStyle: { type: String, default: '' },
 
     visualDNA: {
       style: { type: String, default: 'pixar-3d' },
@@ -80,7 +79,9 @@ const schema = new mongoose.Schema(
       bodyBuild: { type: String, default: '' },
       heightFeel: { type: String, default: '' },
       heightCm: { type: Number, default: 0, min: 0, max: 250 },
-      weightCategory: { type: String, default: '' }, // slim / average / stocky / heavy
+      heightFeet: { type: Number, default: 0, min: 0, max: 9 },
+      weightKg: { type: Number, default: 0, min: 0, max: 300 },
+      weightCategory: { type: String, default: '' }, // derived from BMI — do NOT set by user
 
       accessories: { type: [String], default: [] },
       paletteNotes: { type: String, default: '' },
@@ -98,8 +99,6 @@ const schema = new mongoose.Schema(
     },
 
     imageUrl: { type: String, default: '' },           // portrait
-    poseSheetUrl: { type: String, default: '' },       // full sheet
-    masterReferenceUrl: { type: String, default: '' }, // approved portrait ref
     selectedStyle: { type: String, default: '' },
     styleApprovedAt: { type: Date },
 

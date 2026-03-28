@@ -249,26 +249,23 @@ function kbBlock(kb, opts = {}) {
 
   if (kb.islamicValues?.length)    lines.push(`Islamic Values: ${kb.islamicValues.join(', ')}`);
   if (kb.avoidTopics?.length)      lines.push(`Avoid Topics: ${kb.avoidTopics.join(', ')}`);
-  if (kb.illustrationRules?.length) lines.push(`Illustration Rules: ${kb.illustrationRules.join('; ')}`);
-  if (kb.customRules)              lines.push(`Custom Rules: ${kb.customRules}`);
 
-  // ── Themes ──────────────────────────────────────────────────────────────
-  if (kb.themes?.length) {
-    lines.push('Themes:');
-    for (const t of kb.themes) {
-      lines.push(`  • ${t.title}: ${t.coreConflict || ''} | Symbols: ${(t.anchorSymbols || []).join(', ')}`);
+  // ── Background settings (fed into both text + image prompts) ────────────
+  if (kb.backgroundSettings) {
+    const bg = kb.backgroundSettings;
+    const targetGroup = opts.ageGroup === 'underSix' ? 'junior' : (opts.ageGroup || 'junior');
+    const bgGroup = bg[targetGroup] || bg.junior;
+    if (bgGroup) {
+      if (bgGroup.tone)           lines.push(`Background Tone: ${bgGroup.tone}`);
+      if (bgGroup.locations?.length) lines.push(`Preferred Locations: ${bgGroup.locations.join(', ')}`);
+      if (bgGroup.colorStyle)     lines.push(`Color Style: ${bgGroup.colorStyle}`);
+      if (bgGroup.lightingStyle)  lines.push(`Lighting Style: ${bgGroup.lightingStyle}`);
+      if (bgGroup.timeOfDay)      lines.push(`Default Time of Day: ${bgGroup.timeOfDay}`);
+      if (bgGroup.cameraHint)     lines.push(`Default Camera Hint: ${bgGroup.cameraHint}`);
+      if (bgGroup.keyFeatures?.length) lines.push(`Scene Key Features: ${bgGroup.keyFeatures.join(', ')}`);
     }
-  }
-
-  // ── Literary devices ────────────────────────────────────────────────────
-  if (kb.literaryDevices) {
-    const ld = kb.literaryDevices;
-    if (ld.symbolAnchors?.length)
-      lines.push(`Symbol Anchors: ${ld.symbolAnchors.map(s => `${s.symbol}=${s.meaning}`).join('; ')}`);
-    if (ld.approvedDevices?.length)
-      lines.push(`Approved Literary Devices: ${ld.approvedDevices.join(', ')}`);
-    if (ld.avoidDevices?.length)
-      lines.push(`Avoid Devices: ${ld.avoidDevices.join(', ')}`);
+    if (bg.avoidBackgrounds?.length) lines.push(`Avoid Backgrounds: ${bg.avoidBackgrounds.join(', ')}`);
+    if (bg.universalRules)        lines.push(`Background Universal Rules: ${bg.universalRules}`);
   }
 
   // ── Book formatting (text-gen guide) ───────────────────────────────────
@@ -340,7 +337,6 @@ ${characters.map(c => {
   const mod = c.modestyRules || {};
   return `  • ${c.name} — ${c.role}, age ${c.ageRange}, ${vd.gender || 'child'}
     Traits: ${(c.traits || []).join(', ')}
-    Speech: ${c.speakingStyle || c.speechStyle || 'warm and kind'}
     ${mod.hijabAlways ? 'ALWAYS wears hijab' : ''}
     ${mod.looseClothing ? 'Always modestly dressed' : ''}`;
 }).join('\n')}
@@ -809,6 +805,13 @@ function buildStoryPrompt({ project, universe, characters, kb }, storyIdea) {
   const arabic = buildArabicBlock();
   const charBlock = characterBlock(characters);
 
+  const poseConstraint = characters.length
+    ? `POSE RULES:
+- Use ONLY these approved poses: ${[...new Set(characters.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
+- Every illustrationMoment MUST include a valid poseKey from the list above
+- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+    : '';
+
   const formatDesc = profile.mode === 'spreads-only'
     ? `SPREADS-ONLY PICTURE BOOK for ages ${project.ageRange}:
   - NO chapters — just illustrated pages with short text
@@ -835,6 +838,7 @@ ${formatDesc}
 ${universeBlock(universe)}
 ${kbBlock(kb, buildKbOpts(project, characters))}
 ${charBlock}
+${poseConstraint}
 ${arabic}
 
 CRITICAL RULES:
@@ -932,6 +936,12 @@ function buildSpreadPlanningPrompt({ project, universe, characters, kb }) {
   const profile = getAgeProfile(project.ageRange);
   const arabic = buildArabicBlock();
   const charBlock = characterBlock(characters);
+  const poseConstraint = characters.length
+    ? `POSE RULES:
+- Use ONLY these approved poses: ${[...new Set(characters.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
+- Every illustrationMoment MUST include a valid poseKey from the list above
+- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+    : '';
   const storyText = project.artifacts?.storyText || project.artifacts?.outline?.synopsis || '';
   const bookStyle = project.bookStyle || {};
   const pageCount = project.chapterCount || 10;
@@ -955,6 +965,7 @@ ${textRules}
 ${universeBlock(universe)}
 ${kbBlock(kb, buildKbOpts(project, characters))}
 ${charBlock}
+${poseConstraint}
 ${arabic}
 
 CRITICAL RULES:
@@ -1014,12 +1025,20 @@ function buildPictureBookChapterPrompt({ project, universe, characters, kb }, ch
     ? characters.filter(c => chapterOutline.charactersInScene.includes(c.name))
     : characters;
 
+  const poseConstraint = sceneChars.length
+    ? `POSE RULES:
+- Use ONLY these approved poses: ${[...new Set(sceneChars.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
+- Every illustrationMoment MUST include a valid poseKey from the list above
+- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+    : '';
+
   const system = `You are an expert Islamic children's picture book author.
 PICTURE BOOK for ages ${project.ageRange}. MAX ${profile.maxWords} words per spread.
 Each spread = one illustrated page with 1-2 short sentences.
 ${universeBlock(universe)}
 ${kbBlock(kb, buildKbOpts(project, sceneChars))}
 ${characterBlock(sceneChars)}
+${poseConstraint}
 ${arabic}
 
 CRITICAL RULES:
@@ -1089,6 +1108,13 @@ function buildChapterBookProsePrompt({ project, universe, characters, kb }, chap
     ? characters.filter(c => chapterOutline.charactersInScene.includes(c.name))
     : characters;
 
+  const poseConstraint = sceneChars.length
+    ? `POSE RULES:
+- Use ONLY these approved poses: ${[...new Set(sceneChars.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
+- Every illustrationMoment MUST include a valid poseKey from the list above
+- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+    : '';
+
   const system = `You are an expert Islamic children's chapter book author for ages ${project.ageRange}.
 
 This is a REAL CHAPTER BOOK, not a spread-based picture book.
@@ -1106,6 +1132,7 @@ CRITICAL WRITING RULES:
 ${universeBlock(universe)}
 ${kbBlock(kb, buildKbOpts(project, sceneChars))}
 ${characterBlock(sceneChars)}
+${poseConstraint}
 ${arabic}
 
 CRITICAL STRUCTURE RULES:

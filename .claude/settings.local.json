@@ -4,7 +4,8 @@
       "Bash(xargs ls:*)",
       "Read(//c/Users/Paklogics/Desktop/example_code/example/Noorstudio/src/lib/api/**)",
       "Read(//c/Users/Paklogics/Desktop/example_code/example/Noorstudio/**)",
-      "Bash(node -e \"const l = require\\(''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/lucide-react/dist/cjs/lucide-react.js''\\); [''Baby'',''SlidersHorizontal'',''ListOrdered'',''TreePine'',''Brush'',''UserRound'',''Frame'',''LayoutTemplate'',''Ban'',''Languages'',''HandHeart'',''Moon'',''Star'',''PenLine'',''Layers'',''Feather''].forEach\\(n => console.log\\(n, !!l[n]\\)\\)\")"
+      "Bash(node -e \"const l = require\\(''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/lucide-react/dist/cjs/lucide-react.js''\\); [''Baby'',''SlidersHorizontal'',''ListOrdered'',''TreePine'',''Brush'',''UserRound'',''Frame'',''LayoutTemplate'',''Ban'',''Languages'',''HandHeart'',''Moon'',''Star'',''PenLine'',''Layers'',''Feather''].forEach\\(n => console.log\\(n, !!l[n]\\)\\)\")",
+      "Bash(find /c/Users/Paklogics/Desktop/example_code/example/Noorstudio/src/hooks -type f -name *.ts -o -name *.tsx)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\pages\\app",

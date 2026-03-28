@@ -54,6 +54,16 @@ async function ensureCloudinaryUrl(imageUrl, folder, publicId) {
   return result.secure_url;
 }
 
+function deriveWeightCategory(heightCm, weightKg) {
+  if (!heightCm || !weightKg || heightCm < 50 || weightKg < 5) return '';
+  const heightM = heightCm / 100;
+  const bmi = weightKg / (heightM * heightM);
+  if (bmi < 16.5) return 'slim';
+  if (bmi < 21) return 'average';
+  if (bmi < 25) return 'stocky';
+  return 'heavy';
+}
+
 function normalizeVisualDNA(visualDNA = {}, modestyRules = {}) {
   const hijabAlways = !!modestyRules?.hijabAlways;
   const hairOrHijab = visualDNA.hairOrHijab || '';
@@ -90,7 +100,12 @@ function normalizeVisualDNA(visualDNA = {}, modestyRules = {}) {
     bodyBuild: visualDNA.bodyBuild || '',
     heightFeel: visualDNA.heightFeel || '',
     heightCm: typeof visualDNA.heightCm === 'number' ? visualDNA.heightCm : 0,
-    weightCategory: visualDNA.weightCategory || '',
+    heightFeet: typeof visualDNA.heightFeet === 'number' ? visualDNA.heightFeet : 0,
+    weightKg: typeof visualDNA.weightKg === 'number' ? visualDNA.weightKg : 0,
+    weightCategory: deriveWeightCategory(
+      typeof visualDNA.heightCm === 'number' ? visualDNA.heightCm : 0,
+      typeof visualDNA.weightKg === 'number' ? visualDNA.weightKg : 0
+    ),
 
     accessories: Array.isArray(visualDNA.accessories) ? visualDNA.accessories : [],
     paletteNotes: visualDNA.paletteNotes || '',
@@ -160,8 +175,10 @@ function buildStrictCharacterDescription(c) {
     vd.heightCm > 0
       ? `- Height: EXACTLY ${vd.heightCm}cm — enforce this relative to all other characters and objects in the scene`
       : (vd.heightFeel ? `- Height feel: ${vd.heightFeel}` : ''),
-    vd.weightCategory ? `- Weight/body category: ${vd.weightCategory}` : '',
-    vd.bodyBuild ? `- Build: ${vd.bodyBuild}` : '',
+    vd.weightKg > 0 ? `- Weight: EXACTLY ${vd.weightKg}kg` : '',
+    vd.heightFeet > 0 ? `- Height in feet: approx ${vd.heightFeet} ft` : '',
+    vd.weightCategory ? `- Body build (BMI-derived): ${vd.weightCategory}` : '',
+    vd.bodyBuild ? `- Build notes: ${vd.bodyBuild}` : '',
 
     ``,
     `MODESTY RULES:`,
@@ -177,7 +194,6 @@ function buildStrictCharacterDescription(c) {
 
     ``,
     `PERSONALITY: ${(c.traits || []).join(', ')}`,
-    `Speaking style: ${c.speakingStyle || 'warm and friendly'}`,
 
     ``,
     `CONSISTENCY LAW: identical face, outfit, colors, hijab/hair, body build, and height in every image. Height must stay locked — do NOT change the character's size across scenes.`,
@@ -285,7 +301,6 @@ router.post('/', async (req, res, next) => {
       role,
       ageRange,
       traits,
-      speakingStyle,
       visualDNA,
       modestyRules,
     } = req.body;
@@ -307,7 +322,6 @@ router.post('/', async (req, res, next) => {
       role,
       ageRange,
       traits,
-      speakingStyle,
       visualDNA: normalizedVisualDNA,
       modestyRules,
       poseLibrary: DEFAULT_POSES.map((p, i) => ({
@@ -352,7 +366,6 @@ router.put('/:id', async (req, res, next) => {
     if (req.body.role !== undefined) c.role = req.body.role;
     if (req.body.ageRange !== undefined) c.ageRange = req.body.ageRange;
     if (req.body.traits !== undefined) c.traits = req.body.traits;
-    if (req.body.speakingStyle !== undefined) c.speakingStyle = req.body.speakingStyle;
     if (req.body.modestyRules !== undefined) c.modestyRules = req.body.modestyRules;
     if (req.body.status !== undefined) c.status = req.body.status;
     if (req.body.poseLibrary !== undefined) c.poseLibrary = req.body.poseLibrary;
@@ -446,7 +459,6 @@ router.post('/:id/generate-portrait', async (req, res, next) => {
       `noorstudio/characters/${c._id}`,
       `portrait_${Date.now()}`
     );
-    c.masterReferenceUrl = c.imageUrl;
     c.selectedStyle = style;
     c.styleApprovedAt = new Date();
     c.status = 'generated';
@@ -461,7 +473,6 @@ router.post('/:id/generate-portrait', async (req, res, next) => {
     res.json({
       character: c,
       imageUrl: c.imageUrl,
-      masterReferenceUrl: c.masterReferenceUrl,
       prompt,
       provider: result.provider,
     });
@@ -508,7 +519,6 @@ router.post('/:id/generate-pose-sheet', async (req, res, next) => {
         `noorstudio/characters/${c._id}`,
         `portrait_migrated_${Date.now()}`
       );
-      c.masterReferenceUrl = c.imageUrl;
       await c.save();
     }
 
@@ -532,18 +542,12 @@ router.post('/:id/generate-pose-sheet', async (req, res, next) => {
     const result = await generateImage({
       task: 'pose-sheet',
       prompt,
-      references: [c.masterReferenceUrl || c.imageUrl],
+      references: [c.imageUrl],
       negative_prompt: IMAGE_NEGATIVE_PROMPT,
       projectId: c.universeId?.toString(),
       traceId: `posesheet_${c._id}_${Date.now()}`,
       style,
     });
-
-    c.poseSheetUrl = await ensureCloudinaryUrl(
-      result.imageUrl,
-      `noorstudio/characters/${c._id}`,
-      `posesheet_${Date.now()}`
-    );
 
     c.poseLibrary = approvedPoses.map((pose, i) => ({
       poseKey: pose.poseKey,
@@ -553,7 +557,7 @@ router.post('/:id/generate-pose-sheet', async (req, res, next) => {
       useForScenes: Array.isArray(pose.useForScenes) ? pose.useForScenes : [],
       notes: pose.notes || '',
       prompt: pose.prompt || buildPosePromptForSinglePose(c, pose, style),
-      sourceSheetUrl: c.poseSheetUrl,
+      sourceSheetUrl: '',
       imageUrl: pose.imageUrl || '',
     }));
 
@@ -573,7 +577,6 @@ router.post('/:id/generate-pose-sheet', async (req, res, next) => {
 
     res.json({
       character: c,
-      poseSheetUrl: c.poseSheetUrl,
       poseLibrary: c.poseLibrary,
       prompt,
       provider: result.provider,
@@ -642,7 +645,7 @@ router.post('/:id/poses/:poseKey/regenerate', async (req, res, next) => {
     const result = await generateImage({
       task: 'portrait',
       prompt,
-      references: [c.masterReferenceUrl || c.imageUrl].filter(Boolean),
+      references: [c.imageUrl].filter(Boolean),
       negative_prompt: IMAGE_NEGATIVE_PROMPT,
       projectId: c.universeId?.toString(),
       traceId: `pose_${c._id}_${pose.poseKey}_${Date.now()}`,
@@ -657,7 +660,7 @@ router.post('/:id/poses/:poseKey/regenerate', async (req, res, next) => {
 
     c.poseLibrary[idx].prompt = prompt;
     c.poseLibrary[idx].imageUrl = uploaded;
-    c.poseLibrary[idx].sourceSheetUrl = c.poseSheetUrl || '';
+    c.poseLibrary[idx].sourceSheetUrl = '';
 
     await c.save();
     await deductCredits(req.user._id, cost, `Pose regenerate: ${c.name}/${pose.poseKey}`, 'project');
@@ -707,16 +710,6 @@ router.post('/:id/fix-storage', async (req, res, next) => {
         `noorstudio/characters/${c._id}`,
         'portrait_migrated'
       );
-      c.masterReferenceUrl = c.imageUrl;
-      changed = true;
-    }
-
-    if (c.poseSheetUrl && !c.poseSheetUrl.startsWith('https://')) {
-      c.poseSheetUrl = await ensureCloudinaryUrl(
-        c.poseSheetUrl,
-        `noorstudio/characters/${c._id}`,
-        'posesheet_migrated'
-      );
       changed = true;
     }
 
@@ -737,7 +730,6 @@ router.post('/:id/approve', async (req, res, next) => {
     }
 
     c.status = 'approved';
-    c.masterReferenceUrl = c.imageUrl; // always sync to latest portrait on approve
 
     await c.save();
     res.json(c);

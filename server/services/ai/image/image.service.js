@@ -219,6 +219,8 @@ function buildProjectStyleLock(project, universeStyle, kb, ageMode) {
   if (kbBg?.tone)        lines.push(`• Scene tone: ${kbBg.tone}`);
   if (kbBg?.locations?.length) lines.push(`• Approved locations: ${kbBg.locations.join(', ')}`);
   if (kbBg?.keyFeatures?.length) lines.push(`• Background key features: ${kbBg.keyFeatures.join('; ')}`);
+  if (kbBg?.timeOfDay)   lines.push(`• Default time of day: ${kbBg.timeOfDay} (use this unless scene overrides)`);
+  if (kbBg?.cameraHint)  lines.push(`• Default camera hint: ${kbBg.cameraHint} (use this unless scene overrides)`);
   if (kbBg?.additionalNotes) lines.push(`• Background notes: ${kbBg.additionalNotes}`);
 
   if (kb?.backgroundSettings?.avoidBackgrounds?.length)
@@ -988,8 +990,8 @@ PORTRAIT GOAL:
 
 function getPortraitRefs(character) {
   const refs = [];
-  if (startsWithHttp(character.masterReferenceUrl)) refs.push(character.masterReferenceUrl);
-  else if (startsWithHttp(character.imageUrl)) refs.push(character.imageUrl);
+  // masterReferenceUrl removed — use imageUrl directly
+  if (startsWithHttp(character.imageUrl)) refs.push(character.imageUrl);
   return refs;
 }
 
@@ -1079,8 +1081,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
   // Run this in your DB or add a debug log in generateBookIllustrations:
   console.log('[DEBUG] Characters:', allCharacters.map(c => ({
     name: c.name,
-    masterReferenceUrl: c.masterReferenceUrl,
-    imageUrl: c.imageUrl
+    imageUrl: c.imageUrl,
   })));
 
   // Important: do not use previously generated scene images as identity anchors.
@@ -1540,7 +1541,7 @@ export async function generateStageImage({
   console.log('[generateStageImage] project.characterIds:', project.characterIds);
   console.log('[generateStageImage] project.universeId:', project.universeId);
   console.log('[generateStageImage] allCharacters loaded:', allCharacters.length,
-    allCharacters.map(c => ({ name: c.name, masterRef: c.masterReferenceUrl?.slice(0, 50) }))
+    allCharacters.map(c => ({ name: c.name, imageUrl: c.imageUrl?.slice(0, 50) }))
   );
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
   const stableIdentityRefs = buildInitialRefs(allCharacters);
@@ -1700,7 +1701,19 @@ export async function generateStageImage({
         momentTitle = moment.momentTitle || '';
         illustrationHint = moment.illustrationHint || '';
         sceneEnvironment = moment.sceneEnvironment || '';
-        timeOfDay = moment.timeOfDay || '';
+
+        // Use KB background timeOfDay/cameraHint as defaults when moment doesn't specify
+        {
+          const ageMode = getAgeMode(project.ageRange);
+          const bgKey = ageMode === 'spreads-only' || ageMode === 'picture-book' ? 'junior' : 'middleGrade';
+          const kbBg = kb?.backgroundSettings?.[bgKey];
+          timeOfDay = (moment.timeOfDay && moment.timeOfDay !== 'day')
+            ? moment.timeOfDay
+            : (kbBg?.timeOfDay || moment.timeOfDay || 'afternoon');
+          if (kbBg?.cameraHint && !moment.cameraHint) {
+            moment = { ...moment, cameraHint: kbBg.cameraHint };
+          }
+        }
 
         prompt = buildChapterBookIllustrationPrompt({
           project,
@@ -1835,7 +1848,7 @@ export async function generateStageImage({
     if (targetCharId && result.imageUrl) {
       await Character.findByIdAndUpdate(targetCharId, {
         $set: {
-          masterReferenceUrl: result.imageUrl,
+          imageUrl: result.imageUrl,
           selectedStyle: style || 'pixar-3d',
           styleApprovedAt: new Date().toISOString(),
           status: 'generated',
@@ -1847,7 +1860,6 @@ export async function generateStageImage({
       ...result,
       prompt,
       traceId: trId,
-      masterReferenceUrl: result.imageUrl,
     };
   }
 

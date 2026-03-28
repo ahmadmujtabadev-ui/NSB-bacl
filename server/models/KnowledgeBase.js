@@ -11,6 +11,8 @@ const AgeGroupBackgroundSchema = new Schema({
   lightingStyle:    String,                    // e.g. "golden hues for peace, blue for worry"
   keyFeatures:      { type: [String], default: [] }, // specific visual rules
   additionalNotes:  String,
+  timeOfDay:    String,   // e.g. "afternoon" | "morning" | "evening" | "golden-hour"
+  cameraHint:   String,   // e.g. "wide" | "medium" | "close" | "full-body"
   _id: false,
 }, { _id: false });
 
@@ -77,9 +79,7 @@ const schema = new Schema({
     ageGroup:   String,
     _id: false,
   }],
-  illustrationRules: { type: [String], default: [] },
   avoidTopics:       { type: [String], default: [] },
-  customRules:       String,
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 1. ILLUSTRATION BACKGROUND SETTINGS
@@ -168,27 +168,7 @@ const schema = new Schema({
   characterGuides: { type: [CharacterGuideSchema], default: [] },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 5. LITERARY DEVICES & SYMBOLISM
-  //    Reusable symbols and techniques injected into text-generation prompts
-  // ═══════════════════════════════════════════════════════════════════════════
-  literaryDevices: {
-    naturalMetaphors: [{
-      symbol:  String,   // e.g. "Puddle"
-      meaning: String,   // e.g. "temporary fear or reflection"
-      _id: false,
-    }],
-    symbolAnchors: [{
-      symbol:  String,   // e.g. "Broken Compass"
-      meaning: String,   // e.g. "loss of moral clarity"
-      _id: false,
-    }],
-    approvedDevices:    { type: [String], default: [] }, // "parallel structure", "quiet epiphany" …
-    avoidDevices:       { type: [String], default: [] }, // overused clichés to ban
-    poeticLevel:        String,   // e.g. "most-poetic" for Saeeda, "subtle" for MG
-  },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 6. BOOK FORMATTING RULES (per age group)
+  // 5. BOOK FORMATTING RULES (per age group)
   //    Structure handed to text-generation prompts for pacing & layout
   // ═══════════════════════════════════════════════════════════════════════════
   bookFormatting: {
@@ -208,19 +188,6 @@ const schema = new Schema({
     },
     _id: false,
   },
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 7. THEMES LIBRARY
-  //    Reusable thematic pillars with anchor symbols for prompt injection
-  // ═══════════════════════════════════════════════════════════════════════════
-  themes: [{
-    title:         { type: String, required: true }, // e.g. "Truth vs Comfort"
-    coreConflict:  String,
-    emotionalBeat: String,
-    anchorSymbols: { type: [String], default: [] },
-    ageGroups:     { type: [String], default: [] },  // ["junior","middleGrade","saeeda"]
-    _id: false,
-  }],
 
 }, { timestamps: true });
 
