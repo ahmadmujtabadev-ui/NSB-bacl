@@ -83,6 +83,10 @@ const schema = new mongoose.Schema(
       weightKg: { type: Number, default: 0, min: 0, max: 300 },
       weightCategory: { type: String, default: '' }, // derived from BMI — do NOT set by user
 
+      // Facial features — explicit locks so AI never randomises these
+      facialHair: { type: String, default: '' },   // e.g. "white full beard", "trimmed white mustache", "" = clean-shaven
+      glasses: { type: String, default: '' },       // e.g. "round black-frame glasses", "" = no glasses
+
       accessories: { type: [String], default: [] },
       paletteNotes: { type: String, default: '' },
 

@@ -5,13 +5,24 @@
       "Read(//c/Users/Paklogics/Desktop/example_code/example/Noorstudio/src/lib/api/**)",
       "Read(//c/Users/Paklogics/Desktop/example_code/example/Noorstudio/**)",
       "Bash(node -e \"const l = require\\(''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/lucide-react/dist/cjs/lucide-react.js''\\); [''Baby'',''SlidersHorizontal'',''ListOrdered'',''TreePine'',''Brush'',''UserRound'',''Frame'',''LayoutTemplate'',''Ban'',''Languages'',''HandHeart'',''Moon'',''Star'',''PenLine'',''Layers'',''Feather''].forEach\\(n => console.log\\(n, !!l[n]\\)\\)\")",
-      "Bash(find /c/Users/Paklogics/Desktop/example_code/example/Noorstudio/src/hooks -type f -name *.ts -o -name *.tsx)"
+      "Bash(find /c/Users/Paklogics/Desktop/example_code/example/Noorstudio/src/hooks -type f -name *.ts -o -name *.tsx)",
+      "Bash(npm install:*)",
+      "Bash(node -e \"const pkg = require\\(''./node_modules/fabric/package.json''\\); console.log\\(''fabric version:'', pkg.version\\)\")",
+      "Bash(node -e \"const pkg = require\\(''./node_modules/jspdf/package.json''\\); console.log\\(''jspdf version:'', pkg.version\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(cmd /c \"cd C:\\\\Users\\\\Paklogics\\\\Desktop\\\\example_code\\\\example\\\\Noorstudio && node_modules\\\\.bin\\\\tsc --noEmit --skipLibCheck 2>&1\")",
+      "Bash(cmd /c \"cd /d C:\\\\Users\\\\Paklogics\\\\Desktop\\\\example_code\\\\example\\\\Noorstudio && node_modules\\\\.bin\\\\tsc --noEmit --skipLibCheck 2>&1 | more\")",
+      "Bash(cmd /c \"node -e \"\"const j = require\\(''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/jspdf''\\); console.log\\(Object.keys\\(j\\)\\)\"\"\")",
+      "Bash(cmd /c \"node -e \"\"try{const j=require\\(''''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/jspdf/dist/jspdf.node.js''''\\);console.log\\(''''keys:'''',Object.keys\\(j\\).slice\\(0,5\\)\\)}catch\\(e\\){console.log\\(e.message\\)}\"\"\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\pages\\app",
       "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\lib\\api",
       "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\lib\\store",
-      "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\components\\layout"
+      "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\components\\layout",
+      "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\hooks",
+      "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\components\\shared",
+      "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src"
     ]
   }
 }

@@ -256,6 +256,14 @@ function describeCharacter(c) {
     `  Hair visibility: ${safeStr(vd.hairVisibility) || 'N/A'}`,
     `  Hijab style: ${safeStr(vd.hijabStyle) || 'N/A'}`,
     `  Hijab color: ${safeStr(vd.hijabColor) || 'N/A'}`,
+    // Facial hair — explicit lock either way so AI never randomises
+    safeStr(vd.facialHair)
+      ? `  FACIAL HAIR LOCK — ALWAYS SHOW: ${safeStr(vd.facialHair)} — never remove, never change style or color`
+      : `  FACIAL HAIR: NONE — completely clean-shaven, NO beard, NO mustache, NO stubble — NEVER add any facial hair`,
+    // Glasses — explicit lock either way
+    safeStr(vd.glasses)
+      ? `  GLASSES LOCK — ALWAYS WEARING: ${safeStr(vd.glasses)} — never remove glasses from this character`
+      : `  GLASSES: NONE — this character does NOT wear glasses — NEVER add glasses or spectacles`,
     `  Top garment: ${safeStr(vd.topGarmentType) || 'N/A'} (${safeStr(vd.topGarmentColor) || 'N/A'})`,
     `  Top garment details: ${safeStr(vd.topGarmentDetails) || 'N/A'}`,
     `  Bottom garment: ${safeStr(vd.bottomGarmentType) || 'N/A'} (${safeStr(vd.bottomGarmentColor) || 'N/A'})`,
@@ -329,6 +337,9 @@ Rules:
 • Do NOT add background people, silhouettes, crowd, or duplicates
 • Keep exact same face, age appearance, skin tone, eye color, hair/hijab, outfit, colors, and body proportions
 • Match references exactly while only changing pose, angle, expression, and action
+• NEVER change a character's age, height, skin tone, or face shape from one image to another
+• NEVER redesign clothing or accessories between images
+• A character who appears young in one image must appear exactly the same age in every image
 `.trim();
 }
 
@@ -511,11 +522,32 @@ ${poseLines || ''}
 
 function buildCrossPageAnchor(label, sceneCharacters = []) {
   const names = sceneCharacters.map((c) => c.name).join(', ');
+  const ageLines = sceneCharacters
+    .map((c) => `• ${c.name}: age ${c.ageRange || 'child'}, ${c.visualDNA?.skinTone || ''} skin`)
+    .filter(Boolean)
+    .join('\n');
+  const heightLines = sceneCharacters
+    .filter((c) => c.visualDNA?.heightCm > 0)
+    .map((c) => `• ${c.name}: exactly ${c.visualDNA.heightCm}cm`)
+    .join('\n');
+
   return `
-MASTER CONSISTENCY ANCHOR
-This image belongs to "${label}".
-Keep these characters visually identical across the whole book: ${names || 'scene characters'}.
-Only scene, camera angle, and facial expression may change.
+MASTER CONSISTENCY ANCHOR — ABSOLUTE RULES
+This illustration belongs to "${label}".
+Characters must look IDENTICAL to every other illustration in this book: ${names || 'scene characters'}.
+
+LOCKED — NEVER CHANGE BETWEEN ILLUSTRATIONS:
+${ageLines}
+${heightLines ? `Heights (fixed):\n${heightLines}` : ''}
+• Face structure, bone shape, features — IDENTICAL each time
+• Skin tone — IDENTICAL each time
+• Eye color, eyebrow shape — IDENTICAL each time
+• Hair color, style, length — IDENTICAL each time
+• Clothing colors and style — IDENTICAL each time
+• Body proportions and build — IDENTICAL each time
+
+ALLOWED TO CHANGE: pose, camera angle, facial expression, scene background.
+DO NOT age-up, age-down, change skin tone, or redesign any character between illustrations.
 `.trim();
 }
 
@@ -770,6 +802,71 @@ ${illustrationHint ? `Additional scene hint: ${illustrationHint}` : ''}`
   ].filter(Boolean).join('\n\n');
 }
 
+function buildCoverKbBlock(cd, project, ageMode) {
+  if (!cd) return null;
+  const bs = project?.bookStyle || {};
+  const lines = ['COVER DESIGN — LOCKED DIRECTIVES FROM KNOWLEDGE BASE (non-negotiable):'];
+
+  // ── Atmosphere / mood ────────────────────────────────────────────────────────
+  const atmosphere = ageMode === 'underSix' || ageMode === 'junior'
+    ? (cd.atmosphere?.junior || '')
+    : ageMode === 'saeeda'
+      ? (cd.atmosphere?.saeeda || '')
+      : (cd.atmosphere?.middleGrade || '');
+  if (atmosphere) lines.push(`• ATMOSPHERE LOCK: ${atmosphere}`);
+
+  // ── Typography style directives (font names drive visual tone even for AI) ──
+  const typography = ageMode === 'underSix' || ageMode === 'junior'
+    ? (cd.typography?.junior || '')
+    : ageMode === 'saeeda'
+      ? (cd.typography?.saeeda || '')
+      : (cd.typography?.middleGrade || '');
+  if (typography) {
+    lines.push(`• TYPOGRAPHY & TITLE ZONE STYLE: ${typography}. The top zone background must visually match this typographic personality — e.g. if fonts are playful rounded (Fredoka, Baloo), the top zone must be bright, bubbly, cheerful; if serif adventurous, the zone must feel dramatic and cinematic.`);
+  }
+
+  // ── Color palette ────────────────────────────────────────────────────────────
+  if (bs.colorPalette) lines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette}. Every element — sky, ground, clothing, environment — must use this palette.`);
+
+  // ── Lighting ────────────────────────────────────────────────────────────────
+  if (bs.lightingStyle) lines.push(`• LIGHTING LOCK: ${bs.lightingStyle}. Apply this lighting consistently.`);
+
+  // ── Islamic motifs ──────────────────────────────────────────────────────────
+  if (cd.islamicMotifs?.length) {
+    lines.push(`• ISLAMIC MOTIFS — REQUIRED (woven naturally into the scene, not as decorative borders): ${cd.islamicMotifs.join(', ')}.`);
+  }
+
+  // ── Character composition ────────────────────────────────────────────────────
+  if (cd.characterComposition?.length) {
+    lines.push(`• CHARACTER COMPOSITION LAW: ${cd.characterComposition.join('. ')}.`);
+  }
+
+  // ── Branding rules ──────────────────────────────────────────────────────────
+  if (cd.brandingRules?.length) {
+    lines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
+  }
+
+  // ── Title placement override ─────────────────────────────────────────────────
+  if (cd.titlePlacement) {
+    lines.push(`• TITLE PLACEMENT ZONE: ${cd.titlePlacement}`);
+  }
+
+  // ── Optional addons ──────────────────────────────────────────────────────────
+  if (cd.optionalAddons?.length) {
+    lines.push(`• ATMOSPHERIC ADDONS: ${cd.optionalAddons.join(', ')}.`);
+  }
+
+  // ── Avoid list ───────────────────────────────────────────────────────────────
+  if (cd.avoidCover?.length) {
+    lines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
+  }
+
+  // ── Extra notes ──────────────────────────────────────────────────────────────
+  if (cd.extraNotes) lines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
+
+  return lines.length > 1 ? lines.join('\n') : null;
+}
+
 function buildCoverPrompt({
   project,
   bookTitle,
@@ -784,82 +881,110 @@ function buildCoverPrompt({
   const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
   const cd = kb?.coverDesign || {};
+  const bs = project?.bookStyle || {};
 
   const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.atmosphere?.junior || 'Bright, joyful colors; objects that relate to plot')
+    ? (cd.atmosphere?.junior || 'Bright, warm, joyful colors; cheerful sky; safe and exciting feeling')
     : ageMode === 'saeeda'
-      ? (cd.atmosphere?.saeeda || 'Dreamlike macro-world background')
-      : (cd.atmosphere?.middleGrade || 'Slightly cinematic lighting; natural environment');
+      ? (cd.atmosphere?.saeeda || 'Dreamlike, magical atmosphere; soft glowing light; elegant wonder-filled scenery')
+      : (cd.atmosphere?.middleGrade || 'Cinematic sunset or golden-hour lighting; rich depth; sense of adventure and discovery');
 
-  const typographyNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.typography?.junior || 'Bold, rounded, friendly fonts')
-    : ageMode === 'saeeda'
-      ? (cd.typography?.saeeda || '')
-      : (cd.typography?.middleGrade || 'Serif or elegant sans-serif');
+  const typographyZone = cd.titlePlacement
+    ? cd.titlePlacement
+    : 'Top 25% of cover — keep this zone lighter in tone (sky, gradient, or soft background) so a bold title can be overlaid clearly';
+
+  const authorZone = 'Bottom 12% of cover — keep this strip slightly darker or with a subtle gradient band so the author name can be overlaid in contrasting color';
+
+  const kbBlock = buildCoverKbBlock(cd, project, ageMode);
 
   return [
-    `Front cover illustration for Islamic children's book "${bookTitle}".`,
+    `PROFESSIONAL PUBLISHED BOOK FRONT COVER — Islamic children\'s book titled "${bookTitle}".`,
+    `Design standard: Match the production quality of bestselling published Islamic children\'s books (Kube Publishing, Prolance, Day of Difference level). Cinematic, emotionally rich, print-ready.`,
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
-    CLEAN_BACKGROUND,
+    kbBlock,
+    `COVER LAYOUT ZONES — CRITICAL:
+• TOP ZONE (top 25%): ${typographyZone}. Leave this area clean and bright — the book title text will be overlaid here in post-production.
+• CENTER ZONE (middle 60%): Main character(s) featured in a dynamic, emotionally expressive pose. Character anchored in lower-center, looking active and alive. Rich layered background behind.
+• BOTTOM ZONE (bottom 12%): ${authorZone}. The author name will be overlaid here.
+• Do NOT place character faces or important detail in the very top or very bottom zones.`,
     styleLock,
     outfitQuickRef,
     characterLockBlock,
     poseRefBlock,
     `Only these characters may appear: ${allowedNames || 'main characters only'}.`,
-    cd.characterComposition?.length
-      ? `Character composition rules: ${cd.characterComposition.join('; ')}.`
-      : 'Scene: warm, inviting, memorable hero image with the main character(s) in a clean strong composition.',
+    !cd.characterComposition?.length
+      ? `Character composition: Main character(s) positioned center-to-lower-center as the dominant focal point. Dynamic pose — NOT a static front-facing stance. One character slightly in front of the other for depth. Expression warm and engaging, as if inviting the reader into the story.`
+      : null,
     `Visual atmosphere: ${atmosphereNote}.`,
-    typographyNote ? `Typography feel: ${typographyNote}.` : null,
-    cd.titlePlacement ? `Title placement rule: ${cd.titlePlacement}.` : null,
-    cd.brandingRules?.length ? `Branding rules: ${cd.brandingRules.join('; ')}.` : null,
-    cd.optionalAddons?.length ? `Optional addons: ${cd.optionalAddons.join(', ')}.` : null,
-    cd.islamicMotifs?.length ? `Islamic motifs: ${cd.islamicMotifs.join(', ')}.` : null,
-    cd.avoidCover?.length ? `AVOID on cover: ${cd.avoidCover.join(', ')}.` : null,
-    cd.extraNotes || null,
-    'Portrait cover composition, full bleed, polished and consistent.',
-    'No title text, no author text, no watermark, no letters.',
+    `Background depth: Three distinct layers — foreground detail, mid-ground character scene, richly painted distant background (architecture, nature, or landscape relevant to the story). NO flat or plain backgrounds.`,
+    !cd.islamicMotifs?.length
+      ? `Islamic design elements: Subtle mosque silhouette or geometric pattern in the distant background. Islamic architectural details in the environment. Natural and organic — not decorative borders.`
+      : null,
+    `FINAL QUALITY RULES:
+• Full-bleed portrait illustration, no white margins
+• Rich color depth, professional rendering quality
+• Emotionally resonant — the cover must make a reader WANT to open this book
+• No rendered title text, no author name text, no watermark, no speech bubbles — typography is added in post-production
+• No borders, no frames, no vignette edges`,
   ].filter(Boolean).join('\n\n');
 }
 
 function buildBackCoverPrompt({
   project,
   bookTitle,
-  characterLockBlock,
-  poseRefBlock,
   universeStyle,
-  outfitQuickRef,
-  sceneCharacters,
   kb,
   ageMode,
 }) {
-  const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
-  const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
   const cd = kb?.coverDesign || {};
+  const bs = project?.bookStyle || {};
 
   const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.atmosphere?.junior || 'Bright, joyful colors')
+    ? (cd.atmosphere?.junior || 'Soft, bright, cheerful tones; warm and welcoming')
     : ageMode === 'saeeda'
-      ? (cd.atmosphere?.saeeda || 'Dreamlike macro-world background')
-      : (cd.atmosphere?.middleGrade || 'Slightly cinematic lighting; natural environment');
+      ? (cd.atmosphere?.saeeda || 'Soft glowing dreamlike light; elegant calm')
+      : (cd.atmosphere?.middleGrade || 'Warm cinematic tones; continuation of front cover mood');
+
+  const styleNote = bs.artStyle
+    ? `Match the exact same illustration style as the front cover: ${bs.artStyle}.`
+    : 'Match the exact same illustration style as the front cover.';
+
+  // Build back-cover KB directives (subset — no character composition, no title placement)
+  const backKbLines = ['BACK COVER DESIGN — LOCKED DIRECTIVES (non-negotiable):'];
+  if (atmosphereNote) backKbLines.push(`• ATMOSPHERE LOCK: ${atmosphereNote}`);
+  if (bs.colorPalette)  backKbLines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette} — must match front cover exactly.`);
+  if (bs.lightingStyle) backKbLines.push(`• LIGHTING LOCK: ${bs.lightingStyle} — continuation of front cover lighting.`);
+  if (cd.islamicMotifs?.length) backKbLines.push(`• ISLAMIC MOTIFS (background/decorative only): ${cd.islamicMotifs.join(', ')}.`);
+  if (cd.brandingRules?.length)  backKbLines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
+  if (cd.avoidCover?.length)     backKbLines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
+  if (cd.extraNotes)             backKbLines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
+  const backKbBlock = backKbLines.length > 1 ? backKbLines.join('\n') : null;
 
   return [
-    `Back cover illustration for Islamic children's book "${bookTitle}".`,
+    `PROFESSIONAL PUBLISHED BOOK BACK COVER — Islamic children\'s book "${bookTitle}".`,
+    `Design standard: Clean, editorial back cover matching premium Islamic children\'s book publishers. NO characters, NO people, NO figures of any kind.`,
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
-    CLEAN_BACKGROUND,
-    styleLock,
-    outfitQuickRef,
-    characterLockBlock,
-    poseRefBlock,
-    `Only these characters may appear: ${allowedNames || 'main characters only'}.`,
-    'Scene: peaceful, concluding, calm emotional moment that complements the front cover.',
-    `Visual atmosphere: ${atmosphereNote}.`,
-    cd.islamicMotifs?.length ? `Islamic motifs: ${cd.islamicMotifs.join(', ')}.` : null,
-    cd.avoidCover?.length ? `AVOID on cover: ${cd.avoidCover.join(', ')}.` : null,
-    cd.extraNotes || null,
-    'No text, no barcode, no letters, no watermark.',
+    backKbBlock,
+    `BACK COVER LAYOUT — REQUIRED:
+• TOP SECTION (top 15%): Subtle publisher logo placeholder area — keep clean with a thin ornamental Islamic header divider or crescent/star motif.
+• CENTER SECTION (middle 60%): A large, clean, slightly lighter or semi-transparent panel/zone — this is where the synopsis text will be overlaid. Background should be soft enough for dark text to be readable over it. Can have very subtle texture or watermark-style Islamic geometric pattern beneath.
+• BOTTOM SECTION (bottom 25%): Bottom-left: small publisher details zone (clean, dark enough for white text). Bottom-right corner: barcode placeholder — a clear 2×1 inch clean white rectangle area at bottom-right where the barcode will be printed.`,
+    styleNote,
+    `Background: Full-bleed painted background that directly continues the color palette, lighting mood, and atmosphere of the front cover. If front cover had a sunset sky — back cover has the same sky continuing. If front had warm amber tones — back matches. Creates visual wrap-around feel when both covers are viewed together.`,
+    !cd.islamicMotifs?.length
+      ? `Islamic design elements: Very subtle geometric arabesque pattern as a watermark-level texture in the background. Arch motifs at corners or border edges. Understated and elegant — not overpowering.`
+      : null,
+    `NO CHARACTERS: Absolutely no people, no figures, no character silhouettes, no portraits. Pure environmental/decorative illustration only.`,
+    `Environmental elements (optional, subtle): Story-world objects that complement the front cover — a lantern, an open book, stars, a leaf, a feather, an archway in the distance — only if they enhance the mood without cluttering the text zone.`,
+    !cd.avoidCover?.length ? 'AVOID: Cluttered composition, busy patterns that compete with text, dark center (text must be readable over it), random unrelated objects.' : null,
+    `FINAL QUALITY RULES:
+• Full-bleed portrait composition, no white margins
+• Professional print-ready quality
+• Center zone must stay clean and light enough for dark synopsis text overlay
+• No rendered text, no title, no author name, no letters of any kind
+• No borders or frames`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -955,6 +1080,8 @@ CHARACTER REFERENCE — MUST DEFINE FUTURE CONSISTENCY:
 • Hair visibility: ${safeStr(vd.hairVisibility) || 'N/A'}
 • Hijab style: ${safeStr(vd.hijabStyle) || 'N/A'}
 • Hijab color: ${safeStr(vd.hijabColor) || 'N/A'}
+• FACIAL HAIR: ${safeStr(vd.facialHair) ? `ALWAYS SHOW — ${safeStr(vd.facialHair)}` : 'NONE — clean-shaven, NEVER add beard or mustache'}
+• GLASSES: ${safeStr(vd.glasses) ? `ALWAYS WEARING — ${safeStr(vd.glasses)}` : 'NONE — no glasses, NEVER add spectacles'}
 • Top garment: ${safeStr(vd.topGarmentType) || 'N/A'} (${safeStr(vd.topGarmentColor) || 'N/A'})
 • Top garment details: ${safeStr(vd.topGarmentDetails) || 'N/A'}
 • Bottom garment: ${safeStr(vd.bottomGarmentType) || 'N/A'} (${safeStr(vd.bottomGarmentColor) || 'N/A'})
@@ -1178,19 +1305,10 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
           };
         });
 
-        const refs = buildReferences(sceneCharacters, selectedPoses);
-        const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
-        const poseRefBlock = buildPoseRefInstruction(selectedPoses, sceneCharacters);
-        const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
-
         const prompt = buildBackCoverPrompt({
           project,
           bookTitle,
-          characterLockBlock,
-          poseRefBlock,
           universeStyle,
-          outfitQuickRef,
-          sceneCharacters,
           kb,
           ageMode: getAgeMode(project.ageRange),
         });
@@ -1198,7 +1316,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         const result = await generateImageSafe(project, {
           task: 'back-cover',
           prompt,
-          references: refs,
+          references: [],
           style: universeStyle,
           seed,
           projectId,
@@ -1435,19 +1553,10 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         };
       });
 
-      const refs = buildReferences(sceneCharacters, selectedPoses);
-      const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
-      const poseRefBlock = buildPoseRefInstruction(selectedPoses, sceneCharacters);
-      const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
-
       const prompt = buildBackCoverPrompt({
         project,
         bookTitle,
-        characterLockBlock,
-        poseRefBlock,
         universeStyle,
-        outfitQuickRef,
-        sceneCharacters,
         kb,
         ageMode: getAgeMode(project.ageRange),
       });
@@ -1455,7 +1564,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       const result = await generateImageSafe(project, {
         task: 'back-cover',
         prompt,
-        references: refs,
+        references: [],
         style: universeStyle,
         seed,
         projectId,
@@ -1778,20 +1887,12 @@ export async function generateStageImage({
       };
     });
 
-    refs = buildReferences(sceneCharacters, selectedPoses);
-
-    const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
-    const poseRefBlock = buildPoseRefInstruction(selectedPoses, sceneCharacters);
-    const outfitQuickRef = buildOutfitQuickRef(sceneCharacters);
+    refs = [];
 
     prompt = buildBackCoverPrompt({
       project,
       bookTitle,
-      characterLockBlock,
-      poseRefBlock,
       universeStyle,
-      outfitQuickRef,
-      sceneCharacters,
       kb,
       ageMode: getAgeMode(project.ageRange),
     });
@@ -1824,8 +1925,8 @@ export async function generateStageImage({
     );
   }
 
-  // Append composition directive for illustration variants (doesn't override character lock)
-  if (compositionDirective && task === 'illustration') {
+  // Append composition directive to drive visual variety between variants
+  if (compositionDirective && (task === 'illustration' || task === 'cover' || task === 'back-cover')) {
     prompt = `${prompt}\n\n${compositionDirective}`;
   }
 

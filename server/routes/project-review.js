@@ -325,7 +325,7 @@ function buildIllustrationReview(project) {
                 chapterIndex: 0,
                 spreadIndex: si,
                 sourceType: 'spread',
-                status: ill.imageUrl ? 'generated' : 'draft',
+                status: ill.approvedAt ? 'approved' : (ill.imageUrl ? 'generated' : 'draft'),
                 current: {
                     imageUrl: ill.imageUrl || '',
                     prompt: ill.prompt || '',
@@ -359,7 +359,7 @@ function buildIllustrationReview(project) {
                     chapterIndex: ci,
                     spreadIndex: si,
                     sourceType: 'spread',
-                    status: ill.imageUrl ? 'generated' : 'draft',
+                    status: ill.approvedAt ? 'approved' : (ill.imageUrl ? 'generated' : 'draft'),
                     current: {
                         imageUrl: ill.imageUrl || '',
                         prompt: ill.prompt || '',
@@ -419,7 +419,7 @@ function buildIllustrationReview(project) {
                 chapterIndex: ci,
                 spreadIndex: mi,
                 sourceType: 'chapter-moment',
-                status: ill.imageUrl ? 'generated' : 'draft',
+                status: ill.approvedAt ? 'approved' : (ill.imageUrl ? 'generated' : 'draft'),
                 current: {
                     imageUrl: ill.imageUrl || '',
                     prompt: ill.prompt || '',
@@ -444,9 +444,21 @@ function buildIllustrationReview(project) {
 
 function buildCoverReview(project) {
     const cover = project.artifacts?.cover || {};
+
+    const deriveFrontStatus = () => {
+        if (cover.frontStatus === 'approved' || cover.frontApprovedAt) return 'approved';
+        if (cover.frontUrl) return 'generated';
+        return 'draft';
+    };
+    const deriveBackStatus = () => {
+        if (cover.backStatus === 'approved' || cover.backApprovedAt) return 'approved';
+        if (cover.backUrl) return 'generated';
+        return 'draft';
+    };
+
     return {
         front: {
-            status: cover.frontUrl ? 'generated' : 'draft',
+            status: deriveFrontStatus(),
             current: {
                 imageUrl: cover.frontUrl || '',
                 prompt: cover.frontPrompt || '',
@@ -459,7 +471,7 @@ function buildCoverReview(project) {
             updatedAt: nowIso(),
         },
         back: {
-            status: cover.backUrl ? 'generated' : 'draft',
+            status: deriveBackStatus(),
             current: {
                 imageUrl: cover.backUrl || '',
                 prompt: cover.backPrompt || '',
@@ -717,6 +729,7 @@ function syncCoverNodeToCore(project, side, node) {
         arts.cover.frontVariants = normArr(current.variants);
         arts.cover.frontSelectedVariantIndex = current.selectedVariantIndex ?? 0;
         arts.cover.frontApprovedAt = node.approvedAt || null;
+        arts.cover.frontStatus = node.status || 'draft';
     } else {
         arts.cover.backUrl = current.imageUrl || '';
         arts.cover.backPrompt = current.prompt || '';
@@ -724,6 +737,7 @@ function syncCoverNodeToCore(project, side, node) {
         arts.cover.backVariants = normArr(current.variants);
         arts.cover.backSelectedVariantIndex = current.selectedVariantIndex ?? 0;
         arts.cover.backApprovedAt = node.approvedAt || null;
+        arts.cover.backStatus = node.status || 'draft';
     }
 }
 
@@ -1729,12 +1743,51 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
             });
         }
 
+        const basePrompt = str(req.body.prompt || node.current?.prompt || '');
         const task = side === 'front' ? 'cover' : 'back-cover';
+
+        // Each variant gets a distinctly different visual design direction
+        const FRONT_COVER_COMPOSITIONS = [
+            // V0 — Classic hero: character centered, dramatic sky behind
+            'VARIANT DESIGN: Classic hero composition. Main character(s) centered in lower half, looking slightly upward with confidence. Wide open sky occupying top 40% — gradient from deep blue/amber to lighter tones near horizon. Rich layered cityscape or landscape behind. Cinematic wide-angle feel. Warm golden-hour lighting on characters.',
+
+            // V1 — Rule of thirds: character offset, story world dominates
+            'VARIANT DESIGN: Rule-of-thirds editorial composition. Main character positioned on left third of frame, looking toward center-right (as if walking into the story). Right side shows rich environmental detail — architecture, trees, or landscape creating narrative depth. Top zone kept clean/sky for title. Slightly cooler, mysterious dusk lighting.',
+
+            // V2 — Close portrait: emotional close-up, face and upper body
+            'VARIANT DESIGN: Close-up portrait composition. Character fills 70% of the frame from waist up. Face and expression are the emotional anchor — warm, curious, determined. Background is a softly blurred bokeh of the story world. Intimate, personal feel. Warm amber rim lighting around character. Top 20% remains open sky/soft gradient for title.',
+
+            // V3 — Epic wide shot: small character, grand environment
+            'VARIANT DESIGN: Epic environmental composition. Character(s) appear smaller in the lower center third, dwarfed by a vast, awe-inspiring landscape — towering mosque architecture, sweeping hills, dramatic clouds, or a glowing city at sunset. Sense of scale and wonder. Character silhouetted or lit from behind. Rich atmospheric perspective depth. Sky dominates top half.',
+
+            // V4 — Dynamic low angle: powerful upward perspective
+            'VARIANT DESIGN: Dynamic low-angle composition. Camera angle is low — looking slightly upward at the main character. Character stands tall and powerful in the lower center, with the world spreading behind and upward. Strong diagonal composition lines. Dramatic sky above with clouds or stars. Vibrant contrasting colors. Energetic, bold, action-oriented feel.',
+        ];
+
+        const BACK_COVER_COMPOSITIONS = [
+            // V0 — Ornamental arch frame with soft gradient center
+            'VARIANT DESIGN: Elegant Islamic arch frame. A beautifully painted arch motif frames the upper portion of the cover. Center zone is a soft, warm cream/ivory gradient — clean and light for text overlay. Islamic geometric border details at corners. Warm amber and gold color palette matching front cover.',
+
+            // V1 — Continuous panoramic landscape (wrap-around feel)
+            'VARIANT DESIGN: Panoramic wrap-around continuation. The back cover shows the same landscape environment from the front cover, but from a wider angle — as if the camera panned to the right. No characters. Atmospheric depth with layered hills, architecture, and sky. Slightly cooler/twilight version of the front cover palette. Center area kept misty/soft for text.',
+
+            // V2 — Night sky / starry scene with Islamic pattern overlay
+            'VARIANT DESIGN: Celestial night scene. A deep midnight-blue sky filled with stars and a crescent moon. Distant glowing mosque silhouette on the horizon. Very subtle Islamic geometric lattice pattern as a semi-transparent overlay across the entire background. Clean central zone with a soft glowing light circle for synopsis text placement.',
+
+            // V3 — Watercolor texture with botanical elements
+            'VARIANT DESIGN: Textured illustrative background. A rich, hand-painted-feel watercolor texture in the book\'s dominant color palette. Subtle botanicals — olive branches, geometric leaves, abstract floral — woven naturally into the edges and corners. Center 50% is intentionally clean and light. Elegant and premium publisher quality.',
+
+            // V4 — Geometric Islamic tile mosaic border
+            'VARIANT DESIGN: Architectural Islamic tile composition. The border of the back cover features an intricate Islamic geometric tile pattern as a decorative frame — like traditional Moroccan or Ottoman tilework. Interior center is a clean, plain surface in a complementary solid or gradient color (matching front cover). Bottom-right barcode zone clearly visible.',
+        ];
+
+        const compositions = side === 'front' ? FRONT_COVER_COMPOSITIONS : BACK_COVER_COMPOSITIONS;
 
         const variants = [];
 
         for (let i = 0; i < variantCount; i++) {
             const seed = req.body.seed ? Number(req.body.seed) + i * 1000 : Date.now() + i * 1000;
+            const compositionDirective = compositions[i] || compositions[0];
 
             const result = await generateStageImage({
                 task,
@@ -1743,6 +1796,7 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
                 customPrompt: basePrompt || undefined,
                 seed,
                 style: req.body.style,
+                compositionDirective,
                 traceId: `review_cover_${side}_${project._id}_v${i}_${Date.now()}`,
             });
 

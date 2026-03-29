@@ -1087,6 +1087,29 @@ Respond ONLY with:
 
 function buildChapterBookProsePrompt({ project, universe, characters, kb }, chapterIndex) {
   const profile = getAgeProfile(project.ageRange);
+
+  // Override word targets from KB bookFormatting if set — KB values win over profile defaults
+  let minChapterWords = profile.minChapterWords;
+  let maxChapterWords = profile.maxChapterWords;
+  const kbFmt = kb?.bookFormatting?.middleGrade;
+  if (kbFmt) {
+    if (kbFmt.sceneLength) {
+      const parsed = parseInt(String(kbFmt.sceneLength).replace(/[^0-9]/g, ''), 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        minChapterWords = Math.round(parsed * 0.85);
+        maxChapterWords = Math.round(parsed * 1.15);
+      }
+    } else if (kbFmt.wordCount && kbFmt.chapterRange) {
+      const total    = parseInt(String(kbFmt.wordCount).replace(/[^0-9]/g, ''), 10);
+      const chapters = parseInt(String(kbFmt.chapterRange).replace(/[^0-9]/g, ''), 10);
+      if (!isNaN(total) && !isNaN(chapters) && chapters > 0) {
+        const perChapter = Math.round(total / chapters);
+        minChapterWords = Math.round(perChapter * 0.85);
+        maxChapterWords = Math.round(perChapter * 1.15);
+      }
+    }
+  }
+
   const outline = project.artifacts?.outline || {};
   const chapterOutline = normArr(outline?.chapters || [])[chapterIndex];
   const storyText = project.artifacts?.storyText || '';
@@ -1121,7 +1144,7 @@ This is a REAL CHAPTER BOOK, not a spread-based picture book.
 
 CRITICAL WRITING RULES:
 - Write ONE full prose chapter
-- Length: ${profile.minChapterWords}-${profile.maxChapterWords} words
+- Length: ${minChapterWords}-${maxChapterWords} words
 - Third-person past tense
 - Novel-like, immersive, warm, adventurous
 - Preserve continuity with earlier chapters
@@ -1172,7 +1195,7 @@ Respond ONLY with this JSON:
   "chapterTitle": "${chapterOutline?.title || `Chapter ${chapterIndex + 1}`}",
   "islamicMoment": "specific Islamic value or faith-based moment",
   "chapterSummary": "2-3 sentence summary",
-  "chapterText": "Full prose chapter of ${profile.minChapterWords}-${profile.maxChapterWords} words",
+  "chapterText": "Full prose chapter of ${minChapterWords}-${maxChapterWords} words",
   "illustrationMoments": [
     {
       "momentTitle": "string",

@@ -107,6 +107,10 @@ function normalizeVisualDNA(visualDNA = {}, modestyRules = {}) {
       typeof visualDNA.weightKg === 'number' ? visualDNA.weightKg : 0
     ),
 
+    // Facial feature locks — critical for elder/adult character consistency
+    facialHair: visualDNA.facialHair || '',
+    glasses: visualDNA.glasses || '',
+
     accessories: Array.isArray(visualDNA.accessories) ? visualDNA.accessories : [],
     paletteNotes: visualDNA.paletteNotes || '',
 
@@ -158,6 +162,15 @@ function buildStrictCharacterDescription(c) {
     vd.hairStyle ? `- Hair style: ${vd.hairStyle}` : '',
     vd.hairColor ? `- Hair color: ${vd.hairColor}` : '',
     vd.hairVisibility ? `- Hair visibility: ${vd.hairVisibility}` : '',
+
+    ``,
+    `FACIAL FEATURE LOCKS — NEVER CHANGE BETWEEN IMAGES:`,
+    vd.facialHair
+      ? `- FACIAL HAIR: ALWAYS SHOW — ${vd.facialHair} (never remove, never change style or color)`
+      : `- FACIAL HAIR: NONE — completely clean-shaven, NO beard, NO mustache, NO stubble — NEVER add any facial hair`,
+    vd.glasses
+      ? `- GLASSES: ALWAYS WEARING — ${vd.glasses} (never remove glasses from this character)`
+      : `- GLASSES: NONE — this character does NOT wear glasses — NEVER add glasses or spectacles`,
 
     ``,
     `OUTFIT LOCK:`,
@@ -611,6 +624,81 @@ router.put('/:id/poses/:poseKey/prompt', async (req, res, next) => {
 
     await c.save();
     res.json(c);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ─── Batch: generate images for all (or missing) poses at once ───────────────
+
+router.post('/:id/poses/generate-all-images', async (req, res, next) => {
+  try {
+    const c = await getCharacterForUser(req.params.id, req.user._id);
+
+    if (!c.imageUrl) {
+      throw new ValidationError('Generate a portrait first before generating pose images');
+    }     
+
+    const style = req.body.style || c.selectedStyle || c.visualDNA?.style || 'pixar-3d';
+    const forceAll = req.body.force === true; // regenerate even if imageUrl already exists
+
+    const posesToGenerate = (c.poseLibrary || []).filter(
+      (p) => p.approved !== false && (forceAll || !p.imageUrl)
+    );
+
+    if (posesToGenerate.length === 0) {
+      return res.json({ character: c, generated: 0, message: 'All poses already have images' });
+    }
+
+    const costPerPose = STAGE_CREDIT_COSTS.illustration ?? 4;
+    const totalCost = posesToGenerate.length * costPerPose;
+
+    if (req.user.credits < totalCost) {
+      return res.status(402).json({
+        error: {
+          code: 'INSUFFICIENT_CREDITS',
+          message: `Need ${totalCost} credits for ${posesToGenerate.length} poses (${costPerPose} cr each)`,
+        },
+      });
+    }
+
+    // Deduct all credits upfront
+    await deductCredits(req.user._id, totalCost, `Batch pose images: ${c.name} (${posesToGenerate.length} poses)`, 'project');
+
+    // Generate sequentially to avoid rate limits
+    let generated = 0;
+    for (const poseRef of posesToGenerate) {
+      const idx = c.poseLibrary.findIndex((p) => p.poseKey === poseRef.poseKey);
+      if (idx === -1) continue;
+      try {
+        const pose = c.poseLibrary[idx];
+        const prompt = pose.prompt || buildPosePromptForSinglePose(c, pose, style);
+        const result = await generateImage({
+          task: 'portrait',
+          prompt,
+          references: [c.imageUrl].filter(Boolean),
+          negative_prompt: IMAGE_NEGATIVE_PROMPT,
+          projectId: c.universeId?.toString(),
+          traceId: `pose_${c._id}_${pose.poseKey}_${Date.now()}`,
+          style,
+        });
+        const uploaded = await ensureCloudinaryUrl(
+          result.imageUrl,
+          `noorstudio/characters/${c._id}/poses`,
+          `${pose.poseKey}_${Date.now()}`
+        );
+        c.poseLibrary[idx].imageUrl = uploaded;
+        c.poseLibrary[idx].prompt = prompt;
+        generated++;
+      } catch (poseErr) {
+        console.error(`Failed to generate pose ${poseRef.poseKey}:`, poseErr.message);
+        // Continue with remaining poses
+      }
+    }
+
+    await c.save();
+
+    res.json({ character: c, generated, total: posesToGenerate.length });
   } catch (e) {
     next(e);
   }
