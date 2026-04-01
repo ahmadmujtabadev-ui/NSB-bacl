@@ -137,6 +137,15 @@ function buildStrictCharacterDescription(c) {
         ? 'boy'
         : 'girl'));
 
+  // Determine if this is an elder/adult character — they drift more between poses
+  const ageNum = parseInt(c.ageRange) || 0;
+  const isElder = ageNum >= 40 || (c.role || '').toLowerCase() === 'elder';
+
+  // Build an explicit one-line skin tone anchor used at the TOP of every elder prompt
+  const skinToneLine = vd.skinTone
+    ? `⚠️ SKIN TONE LOCKED: "${vd.skinTone}" — this exact skin tone MUST appear on EVERY SINGLE POSE. DO NOT lighten, darken, or alter the skin tone between poses under any circumstances.`
+    : '';
+
   return [
     `CHARACTER IDENTITY — STRICT LOCK`,
     `- Name: ${c.name}`,
@@ -145,14 +154,22 @@ function buildStrictCharacterDescription(c) {
     vd.ageLook ? `- Age look: ${vd.ageLook}` : '',
     `- Role: ${c.role}`,
 
+    // For elder characters, repeat skin tone at the very top before anything else
+    isElder && skinToneLine ? `\n${skinToneLine}` : '',
+
     ``,
-    `FACE LOCK:`,
-    vd.skinTone ? `- Skin tone: ${vd.skinTone}` : '',
+    `FACE LOCK — DO NOT CHANGE BETWEEN POSES:`,
+    vd.skinTone
+      ? `- Skin tone: ${vd.skinTone} — IDENTICAL in every pose, never lighter or darker`
+      : '',
     vd.eyeColor ? `- Eye color: ${vd.eyeColor}` : '',
     vd.faceShape ? `- Face shape: ${vd.faceShape}` : '',
     vd.eyebrowStyle ? `- Eyebrow style: ${vd.eyebrowStyle}` : '',
     vd.noseStyle ? `- Nose style: ${vd.noseStyle}` : '',
     vd.cheekStyle ? `- Cheek style: ${vd.cheekStyle}` : '',
+    // For elder characters, reinforce aging details explicitly
+    isElder ? `- ELDER CHARACTER: preserve all aging cues (wrinkles, grey hair/beard, aged skin tone) in EVERY pose` : '',
+    isElder && vd.facialHair ? `- ELDER FACIAL HAIR ANCHOR: the "${vd.facialHair}" MUST appear in EVERY single pose — same colour, same style, same density` : '',
 
     ``,
     `HAIR / HIJAB LOCK:`,
@@ -166,7 +183,7 @@ function buildStrictCharacterDescription(c) {
     ``,
     `FACIAL FEATURE LOCKS — NEVER CHANGE BETWEEN IMAGES:`,
     vd.facialHair
-      ? `- FACIAL HAIR: ALWAYS SHOW — ${vd.facialHair} (never remove, never change style or color)`
+      ? `- FACIAL HAIR: ALWAYS SHOW — ${vd.facialHair} (never remove, never change style or color between poses)`
       : `- FACIAL HAIR: NONE — completely clean-shaven, NO beard, NO mustache, NO stubble — NEVER add any facial hair`,
     vd.glasses
       ? `- GLASSES: ALWAYS WEARING — ${vd.glasses} (never remove glasses from this character)`
@@ -181,7 +198,7 @@ function buildStrictCharacterDescription(c) {
     vd.bottomGarmentColor ? `- Bottom garment color: ${vd.bottomGarmentColor}` : '',
     vd.shoeType ? `- Shoes: ${vd.shoeType}` : '',
     vd.shoeColor ? `- Shoe color: ${vd.shoeColor}` : '',
-    vd.outfitRules ? `- Legacy outfit rules: ${vd.outfitRules}` : '',
+    vd.outfitRules ? `- Outfit rules: ${vd.outfitRules}` : '',
 
     ``,
     `BODY LOCK — MUST BE ENFORCED IN EVERY IMAGE:`,
@@ -190,7 +207,7 @@ function buildStrictCharacterDescription(c) {
       : (vd.heightFeel ? `- Height feel: ${vd.heightFeel}` : ''),
     vd.weightKg > 0 ? `- Weight: EXACTLY ${vd.weightKg}kg` : '',
     vd.heightFeet > 0 ? `- Height in feet: approx ${vd.heightFeet} ft` : '',
-    vd.weightCategory ? `- Body build (BMI-derived): ${vd.weightCategory}` : '',
+    vd.weightCategory ? `- Body build category: ${vd.weightCategory}` : '',
     vd.bodyBuild ? `- Build notes: ${vd.bodyBuild}` : '',
 
     ``,
@@ -209,7 +226,8 @@ function buildStrictCharacterDescription(c) {
     `PERSONALITY: ${(c.traits || []).join(', ')}`,
 
     ``,
-    `CONSISTENCY LAW: identical face, outfit, colors, hijab/hair, body build, and height in every image. Height must stay locked — do NOT change the character's size across scenes.`,
+    `CONSISTENCY LAW: identical face, skin tone, outfit, colors, hijab/hair, body build, and height in EVERY SINGLE POSE. The portrait reference image attached is the GROUND TRUTH — match it exactly. Height must stay locked — do NOT change the character's size across scenes.`,
+    isElder ? `ELDER CONSISTENCY LAW: elderly characters are the hardest to keep consistent. Pay extra attention to: (1) skin tone exact match, (2) facial hair exact match, (3) wrinkles/aging preserved, (4) hair colour exact match. DO NOT make the character look younger in any pose.` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -238,10 +256,33 @@ function buildPortraitPrompt(c, style) {
   );
 }
 
-function buildPosePromptForSinglePose(c, pose, style) {
+/**
+ * Build the full prompt for a single pose image.
+ * @param {object} c - Character document
+ * @param {object} pose - Pose object from poseLibrary
+ * @param {string} style - Art style string
+ * @param {string|null} coreOverride - When set, replaces the auto-generated core with the
+ *   user's custom text. The master note + prefix/suffix are ALWAYS applied regardless.
+ */
+function buildPosePromptForSinglePose(c, pose, style, coreOverride = null) {
   const cfg = c.promptConfig || {};
+  const vd = c.visualDNA || {};
+  const ageNum = parseInt(c.ageRange) || 0;
+  const isElder = ageNum >= 40 || (c.role || '').toLowerCase() === 'elder';
 
-  const core = [
+  // Hard skin-tone anchor repeated at start and end — prevents AI drift
+  const skinAnchor = vd.skinTone
+    ? `SKIN TONE ANCHOR: ${c.name}'s skin tone is "${vd.skinTone}" — DO NOT change it from the attached portrait reference under any circumstances.`
+    : '';
+
+  const elderAnchor = isElder && vd.facialHair
+    ? `ELDER ANCHOR: ${c.name} is an elder. Preserve ALL aging: "${vd.facialHair}" beard, aged skin, grey hair/beard colours — identical to the portrait reference attached.`
+    : '';
+
+  // Auto-generated core — used when user hasn't supplied a custom core
+  const autoCore = [
+    skinAnchor,
+    elderAnchor,
     `Single character pose reference for Islamic children's book.`,
     buildStrictCharacterDescription(c),
     `POSE REQUIREMENTS:`,
@@ -249,16 +290,18 @@ function buildPosePromptForSinglePose(c, pose, style) {
     `- Pose label: ${pose.label}`,
     `- Usage context: ${(pose.useForScenes || []).join(', ') || 'general'}`,
     `- Full body visible`,
-    `- Plain light neutral background`,
-    `- Same exact face, outfit, colors, hijab/hair, and body proportions as portrait`,
+    `- Plain light neutral background (light grey or off-white)`,
+    `- MATCH PORTRAIT REFERENCE IMAGE ATTACHED — same exact skin tone, face, outfit, colors, hijab/hair, and body proportions`,
     `- ${style} style`,
     `- no text, no extra characters, no background scene`,
-  ].join('\n');
+    skinAnchor ? `FINAL CHECK: ${skinAnchor}` : '',
+  ].filter(Boolean).join('\n');
 
+  // Master note + prefix/suffix are ALWAYS applied — core can be overridden by user
   return mergePromptParts(
     cfg.masterSystemNote,
     cfg.posePromptPrefix,
-    core,
+    coreOverride || autoCore,
     cfg.posePromptSuffix
   );
 }
@@ -433,6 +476,30 @@ router.put('/:id/prompt-config', async (req, res, next) => {
     }
 
     c.promptConfig = nextConfig;
+
+    // When masterSystemNote changes, clear any pose.prompt values that are old
+    // auto-generated assembled prompts (they contain system markers). This forces
+    // the next "Regen All" to rebuild fresh with the current master note.
+    const masterChanged = req.body.masterSystemNote !== undefined;
+    if (masterChanged && Array.isArray(c.poseLibrary)) {
+      const AUTO_MARKERS = [
+        'POSE REQUIREMENTS:',
+        'CHARACTER IDENTITY',
+        'Single character pose reference',
+        'CONSISTENCY LAW:',
+      ];
+      c.poseLibrary = c.poseLibrary.map((pose) => {
+        const isAutoGenerated = AUTO_MARKERS.some((marker) =>
+          (pose.prompt || '').includes(marker)
+        );
+        if (isAutoGenerated) {
+          return { ...pose.toObject ? pose.toObject() : pose, prompt: '' };
+        }
+        return pose;
+      });
+      c.markModified('poseLibrary');
+    }
+
     await c.save();
 
     res.json(c);
@@ -611,7 +678,8 @@ router.put('/:id/poses/:poseKey/prompt', async (req, res, next) => {
     const idx = (c.poseLibrary || []).findIndex((p) => p.poseKey === poseKey);
     if (idx === -1) throw new NotFoundError('Pose not found');
 
-    if (prompt !== undefined) c.poseLibrary[idx].prompt = prompt;
+    // Save only the user's custom core (empty string = clear, auto-generate on next regen)
+    if (prompt !== undefined) c.poseLibrary[idx].prompt = prompt.trim();
     if (approved !== undefined) c.poseLibrary[idx].approved = !!approved;
     if (notes !== undefined) c.poseLibrary[idx].notes = notes;
     if (label !== undefined) c.poseLibrary[idx].label = label;
@@ -672,7 +740,14 @@ router.post('/:id/poses/generate-all-images', async (req, res, next) => {
       if (idx === -1) continue;
       try {
         const pose = c.poseLibrary[idx];
-        const prompt = pose.prompt || buildPosePromptForSinglePose(c, pose, style);
+        // pose.prompt is the user's custom core (not the assembled prompt).
+        // Always rebuild through the builder so masterSystemNote is applied fresh.
+        // Guard against old data: if pose.prompt is the old full assembled prompt,
+        // ignore it so the builder generates a clean prompt from current master note.
+        const AUTO_MARKERS = ['POSE REQUIREMENTS:', 'CHARACTER IDENTITY', 'Single character pose reference', 'CONSISTENCY LAW:'];
+        const isOldAssembled = AUTO_MARKERS.some((m) => (pose.prompt || '').includes(m));
+        const customCore = isOldAssembled ? null : (pose.prompt || null);
+        const prompt = buildPosePromptForSinglePose(c, pose, style, customCore);
         const result = await generateImage({
           task: 'portrait',
           prompt,
@@ -687,8 +762,8 @@ router.post('/:id/poses/generate-all-images', async (req, res, next) => {
           `noorstudio/characters/${c._id}/poses`,
           `${pose.poseKey}_${Date.now()}`
         );
+        // Only update imageUrl — do NOT overwrite pose.prompt (user's custom core)
         c.poseLibrary[idx].imageUrl = uploaded;
-        c.poseLibrary[idx].prompt = prompt;
         generated++;
       } catch (poseErr) {
         console.error(`Failed to generate pose ${poseRef.poseKey}:`, poseErr.message);
@@ -728,8 +803,12 @@ router.post('/:id/poses/:poseKey/regenerate', async (req, res, next) => {
       });
     }
 
-    const prompt = req.body.prompt || pose.prompt || buildPosePromptForSinglePose(c, pose, style);
-    console.log("prompt", prompt)
+    // User's custom core: from request body (dialog edit) or previously saved custom core.
+    // masterSystemNote + posePromptPrefix/Suffix are ALWAYS injected by buildPosePromptForSinglePose.
+    const customCore = req.body.prompt !== undefined ? req.body.prompt : (pose.prompt || null);
+    const prompt = buildPosePromptForSinglePose(c, pose, style, customCore || null);
+    console.log("pose regenerate prompt", prompt);
+
     const result = await generateImage({
       task: 'portrait',
       prompt,
@@ -746,7 +825,11 @@ router.post('/:id/poses/:poseKey/regenerate', async (req, res, next) => {
       `${pose.poseKey}_${Date.now()}`
     );
 
-    c.poseLibrary[idx].prompt = prompt;
+    // Save only the user's custom core (not the assembled prompt) so that
+    // future regenerations always pick up the latest masterSystemNote freshly.
+    if (req.body.prompt !== undefined) {
+      c.poseLibrary[idx].prompt = req.body.prompt;
+    }
     c.poseLibrary[idx].imageUrl = uploaded;
     c.poseLibrary[idx].sourceSheetUrl = '';
 

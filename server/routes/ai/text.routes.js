@@ -3,7 +3,8 @@
 
 import { Router } from 'express';
 import { generateText } from '../../services/ai/text/text.providers.js';
-import { generateStageText, getAgeProfile } from '../../services/ai/text/text.service.js';
+import { generateStageText, getAgeProfile, resolveChapterCount } from '../../services/ai/text/text.service.js';
+import { KnowledgeBase } from '../../models/KnowledgeBase.js';
 import { AI_TOKEN_BUDGETS, estimateTokens } from '../../services/ai/policies/tokenBudget.js';
 import { deductCredits } from '../../middleware/credits.js';
 import { logAIUsage } from '../../services/ai/ai.telemetry.js';
@@ -131,11 +132,12 @@ router.post('/generate', async (req, res, next) => {
       } else {
         // 6–8 => picture-book chapters
         // 9+  => prose chapters
-        const outlineChapters = project.artifacts?.outline?.chapters;
-        const chapterCount =
-          (Array.isArray(outlineChapters) ? outlineChapters.length : 0) ||
-          Number(project.chapterCount) ||
-          (chProfile.mode === 'chapter-book' ? 4 : 3);
+        // Load KB so chapterRange can be honoured
+        const kb = project.knowledgeBaseId
+          ? await KnowledgeBase.findById(project.knowledgeBaseId).lean()
+          : null;
+
+        const chapterCount = resolveChapterCount(project, kb, { fromOutline: true });
 
         charge('chapters', chapterCount);
 

@@ -21,6 +21,255 @@ import { NotFoundError } from '../../../errors.js';
 import { generateText } from './text.providers.js';
 import { AI_TOKEN_BUDGETS, estimateTokens } from '../policies/tokenBudget.js';
 
+// ─── KB chapter-count resolver ────────────────────────────────────────────────
+
+/**
+ * Parse a chapter-range string such as "10 to 14" or "8-12" and return
+ * the upper bound of the range (so the user always gets the richer book).
+ * Returns NaN if the string cannot be parsed.
+ */
+function parseChapterRangeMax(rangeStr) {
+  if (!rangeStr) return NaN;
+  // extract all integers from the string
+  const nums = String(rangeStr).match(/\d+/g);
+  if (!nums || nums.length === 0) return NaN;
+  return Math.max(...nums.map(Number));
+}
+
+/**
+ * Determine the effective chapter count for a project, honouring the
+ * Knowledge Base `bookFormatting.middleGrade.chapterRange` when the project
+ * has not been given an explicit override.
+ *
+ * Priority:
+ *  1. Outline already generated → use actual chapter count from outline
+ *  2. KB bookFormatting.middleGrade.chapterRange (parsed)
+ *  3. project.chapterCount (set by user on the project form)
+ *  4. Age-profile fallback (4 for chapter-book, 3 for picture-book)
+ */
+export function resolveChapterCount(project, kb, { fromOutline = false } = {}) {
+  // 1. Already-generated outline takes precedence
+  if (fromOutline) {
+    const outlineChapters = project.artifacts?.outline?.chapters;
+    if (Array.isArray(outlineChapters) && outlineChapters.length > 0) {
+      return outlineChapters.length;
+    }
+  }
+
+  // 2. KB chapterRange (middleGrade only — picture-books don't use it)
+  const kbRange = kb?.bookFormatting?.middleGrade?.chapterRange;
+  const fromKb  = parseChapterRangeMax(kbRange);
+  if (!isNaN(fromKb) && fromKb > 0) return fromKb;
+
+  // 3. Explicit project field
+  const fromProject = Number(project.chapterCount);
+  if (fromProject > 0) return fromProject;
+
+  // 4. Fallback
+  const profile = getAgeProfile(project.ageRange);
+  return profile.mode === 'chapter-book' ? 4 : 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KB RESOLVERS  — KB-first, profile-fallback
+// Each resolver returns a plain data object.  Prompt builders read from these
+// objects only — they never access kb.* or profile.* directly.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolve all text-generation formatting rules for the project.
+ * KB values win; age-profile hard-coded numbers are the last resort.
+ */
+export function resolveFormattingRules(project, kb) {
+  const profile = getAgeProfile(project.ageRange);
+  const { mode } = profile;
+
+  // ── Shared defaults ────────────────────────────────────────────────────────
+  const rules = {
+    mode,
+    spreadOnly:       profile.spreadOnly,
+    chapterProse:     profile.chapterProse,
+    // spread / picture-book
+    maxWordsPerSpread: profile.maxWords ,
+    spreadCount:       Number(project.chapterCount) || 10,
+    pageFlow:          [],
+    pageCount:         Number(project.chapterCount) || 10,
+    segmentCount:      '',
+    wordCountTarget:   '',
+    readingType:       'parent-read',
+    pageLayout:        '',
+    reflectionPrompt:  '',
+    bonusPageContent:  '',
+    emotionalPattern:  null,
+    illustrationStyle: '',
+    colorPalette:      '',
+    fontPreferences:   [],
+    specialRules:      [],
+    // chapter-book
+    minChapterWords: profile.minChapterWords || 900,
+    maxChapterWords: profile.maxChapterWords || 1400,
+    chapterCount:    resolveChapterCount(project, kb),
+    chapterRhythm:   [],
+    frontMatter:     [],
+    endMatter:       [],
+    sceneLength:     '',
+  };
+
+  if (mode === 'spreads-only') {
+    console.log("spread only")
+    const u = kb?.underSixDesign || {};
+    console.log("under-6 design rules:", u);
+    if (u.maxWordsPerSpread)       rules.maxWordsPerSpread = Number(u.maxWordsPerSpread) || rules.maxWordsPerSpread;
+    if (u.readingType)             rules.readingType       = u.readingType;
+    if (u.pageLayout)              rules.pageLayout        = u.pageLayout;
+    if (u.reflectionPrompt)        rules.reflectionPrompt  = u.reflectionPrompt;
+    if (u.bonusPageContent)        rules.bonusPageContent  = u.bonusPageContent;
+    if (u.emotionalPattern)        rules.emotionalPattern  = u.emotionalPattern;
+    if (u.illustrationStyle)       rules.illustrationStyle = u.illustrationStyle;
+    if (u.colorPalette)            rules.colorPalette      = u.colorPalette;
+    if (u.fontPreferences?.length) rules.fontPreferences   = u.fontPreferences;
+    if (u.specialRules?.length)    rules.specialRules      = u.specialRules;
+    // spread count from junior page count if available
+    const jr = kb?.bookFormatting?.junior || {};
+    if (jr.pageCount) {
+      const nums = String(jr.pageCount).match(/\d+/g);
+      if (nums) rules.spreadCount = Math.max(...nums.map(Number));
+    }
+
+  } else if (mode === 'picture-book') {
+    const jr = kb?.bookFormatting?.junior || {};
+    if (jr.wordCount)          rules.wordCountTarget = jr.wordCount;
+    if (jr.pageFlow?.length)   rules.pageFlow        = jr.pageFlow;
+    if (jr.segmentCount)       rules.segmentCount    = jr.segmentCount;
+    if (jr.pageCount) {
+      const nums = String(jr.pageCount).match(/\d+/g);
+      if (nums) rules.pageCount = Math.max(...nums.map(Number));
+    }
+    // under-6 design can optionally override maxWordsPerSpread for older picture-books
+    const u = kb?.underSixDesign || {};
+    console.log("under-6 design rules:", u);
+    if (u.maxWordsPerSpread) rules.maxWordsPerSpread = Number(u.maxWordsPerSpread) || rules.maxWordsPerSpread;
+
+  } else if (mode === 'chapter-book') {
+    const mg = kb?.bookFormatting?.middleGrade || {};
+    if (mg.wordCount)             rules.wordCountTarget = mg.wordCount;
+    if (mg.sceneLength)           rules.sceneLength     = mg.sceneLength;
+    if (mg.chapterRhythm?.length) rules.chapterRhythm   = mg.chapterRhythm;
+    if (mg.frontMatter?.length)   rules.frontMatter     = mg.frontMatter;
+    if (mg.endMatter?.length)     rules.endMatter       = mg.endMatter;
+    // Derive per-chapter word targets (KB > profile defaults)
+    if (mg.sceneLength) {
+      const n = parseInt(String(mg.sceneLength).replace(/[^0-9]/g, ''), 10);
+      if (!isNaN(n) && n > 0) { rules.minChapterWords = Math.round(n * 0.85); rules.maxChapterWords = Math.round(n * 1.15); }
+    } else if (mg.wordCount && mg.chapterRange) {
+      const total = parseInt(String(mg.wordCount).replace(/[^0-9]/g, ''), 10);
+      const chaps = parseChapterRangeMax(mg.chapterRange);
+      if (!isNaN(total) && !isNaN(chaps) && chaps > 0) {
+        const perCh = Math.round(total / chaps);
+        rules.minChapterWords = Math.round(perCh * 0.85);
+        rules.maxChapterWords = Math.round(perCh * 1.15);
+      }
+    }
+  }
+
+  return rules;
+}
+
+/**
+ * Return background scene rules for the current age group.
+ * Returns null when KB has no backgroundSettings.
+ */
+export function resolveBackgroundRules(project, kb) {
+  const bg = kb?.backgroundSettings;
+  if (!bg) return null;
+  const { mode } = getAgeProfile(project.ageRange);
+  const groupKey  = mode === 'chapter-book' ? 'middleGrade' : 'junior';
+  const bgGroup   = bg[groupKey] || bg.junior || bg.middleGrade || {};
+  return {
+    tone:             bgGroup.tone             || '',
+    locations:        bgGroup.locations        || [],
+    colorStyle:       bgGroup.colorStyle       || '',
+    lightingStyle:    bgGroup.lightingStyle    || '',
+    timeOfDay:        bgGroup.timeOfDay        || '',
+    cameraHint:       bgGroup.cameraHint       || '',
+    keyFeatures:      bgGroup.keyFeatures      || [],
+    additionalNotes:  bgGroup.additionalNotes  || '',
+    avoidBackgrounds: bg.avoidBackgrounds      || [],
+    universalRules:   bg.universalRules        || '',
+  };
+}
+
+/**
+ * Return du'a objects ready for prompt injection.
+ * Each item: { arabic, transliteration, meaning, when }
+ */
+export function resolveDuaRules(kb) {
+  return normArr(kb?.duas || [])
+    .filter(d => d.transliteration)
+    .map(d => ({
+      arabic:          d.arabic          || '',
+      transliteration: d.transliteration,
+      meaning:         d.meaning         || '',
+      when:            d.when            || '',
+    }));
+}
+
+/**
+ * Return vocabulary objects ready for prompt injection.
+ * Each item: { word, definition, example }
+ */
+export function resolveVocabularyRules(kb) {
+  return normArr(kb?.vocabulary || [])
+    .filter(v => v.word)
+    .map(v => ({ word: v.word, definition: v.definition || '', example: v.example || '' }));
+}
+
+/**
+ * Build a map of canonicalized character name → KB character guide.
+ * Resolves by case-insensitive name match.
+ */
+export function resolveCharacterGuideMap(characters, kb) {
+  const guides = {};
+  if (!kb?.characterGuides?.length) return guides;
+  const nameIndex = new Map(characters.map(c => [str(c.name).toLowerCase(), str(c.name)]));
+  for (const g of kb.characterGuides) {
+    const canon = nameIndex.get(str(g.characterName).toLowerCase()) || str(g.characterName);
+    if (canon) guides[canon] = g;
+  }
+  return guides;
+}
+
+/**
+ * Build the Arabic safety block, seeding the approved list from KB duas first,
+ * then filling gaps from the built-in constant map.
+ */
+export function buildArabicSafetyBlockFromKB(kb) {
+  const approved = new Map();
+  // Fill from constant fallbacks
+  for (const p of Object.values(ARABIC_PHRASES)) {
+    approved.set(p.transliteration.toLowerCase(), p);
+  }
+  // KB duas with arabic override/extend the list
+  for (const d of normArr(kb?.duas || [])) {
+    if (d.arabic && d.transliteration) {
+      approved.set(d.transliteration.toLowerCase(), {
+        arabic:          d.arabic,
+        transliteration: d.transliteration,
+        meaning:         d.meaning || '',
+      });
+    }
+  }
+  const list = [...approved.values()]
+    .map(p => `  • ${p.transliteration}: "${p.arabic}" — ${p.meaning}`)
+    .join('\n');
+  return `ARABIC RULES (CRITICAL — violations break the book):
+1. NEVER generate Arabic script yourself
+2. ONLY use exact Unicode strings from this approved list:
+${list}
+3. If phrase is NOT in the list, use ONLY the transliteration
+4. Always return: { arabic, transliteration, meaning } as separate fields`;
+}
+
 // ─── Age routing — single source of truth ─────────────────────────────────────
 
 export function getAgeProfile(ageRange) {
@@ -250,6 +499,30 @@ function kbBlock(kb, opts = {}) {
   if (kb.islamicValues?.length)    lines.push(`Islamic Values: ${kb.islamicValues.join(', ')}`);
   if (kb.avoidTopics?.length)      lines.push(`Avoid Topics: ${kb.avoidTopics.join(', ')}`);
 
+  // ── Du'as ────────────────────────────────────────────────────────────────
+  if (kb.duas?.length) {
+    const duaLines = kb.duas.map(d => {
+      const parts = [];
+      if (d.transliteration) parts.push(d.transliteration);
+      if (d.meaning)         parts.push(`"${d.meaning}"`);
+      if (d.when)            parts.push(`(when: ${d.when})`);
+      return parts.join(' — ');
+    }).filter(Boolean);
+    if (duaLines.length) lines.push(`Du'as to weave naturally into story: ${duaLines.join(' | ')}`);
+  }
+
+  // ── Vocabulary ────────────────────────────────────────────────────────────
+  if (kb.vocabulary?.length) {
+    const vocabLines = kb.vocabulary.map(v => {
+      if (!v.word) return null;
+      let entry = v.word;
+      if (v.definition) entry += ` (${v.definition})`;
+      if (v.example)    entry += ` — e.g. "${v.example}"`;
+      return entry;
+    }).filter(Boolean);
+    if (vocabLines.length) lines.push(`Islamic Vocabulary (use naturally in prose): ${vocabLines.join(' | ')}`);
+  }
+
   // ── Background settings (fed into both text + image prompts) ────────────
   if (kb.backgroundSettings) {
     const bg = kb.backgroundSettings;
@@ -317,14 +590,113 @@ function kbBlock(kb, opts = {}) {
   return lines.join('\n');
 }
 
-/** Build opts for kbBlock from project + loaded character array. */
+/**
+ * Build the KB context block injected into every system prompt.
+ * Calls the typed resolvers so KB values drive the content.
+ */
+function buildKbBlock(project, kb, characters = []) {
+  if (!kb) return '';
+  const rules   = resolveFormattingRules(project, kb);
+  const bgRules = resolveBackgroundRules(project, kb);
+  const duas    = resolveDuaRules(kb);
+  const vocab   = resolveVocabularyRules(kb);
+  const guideMap = resolveCharacterGuideMap(characters, kb);
+  const lines    = [`KNOWLEDGE BASE: ${kb.name}`];
+
+  // ── Faith layer ────────────────────────────────────────────────────────────
+  if (kb.islamicValues?.length)
+    lines.push(`Islamic Values (weave naturally — do not preach): ${kb.islamicValues.join(', ')}`);
+  if (kb.avoidTopics?.length)
+    lines.push(`⛔ Avoid These Topics Entirely: ${kb.avoidTopics.join(', ')}`);
+
+  // ── Du'as ──────────────────────────────────────────────────────────────────
+  if (duas.length) {
+    const formatted = duas.map(d => {
+      const parts = [d.transliteration, d.meaning ? `"${d.meaning}"` : '', d.when ? `(when: ${d.when})` : ''];
+      return parts.filter(Boolean).join(' — ');
+    });
+    lines.push(`Du'as — place naturally at fitting story moments: ${formatted.join(' | ')}`);
+  }
+
+  // ── Vocabulary ─────────────────────────────────────────────────────────────
+  if (vocab.length) {
+    const formatted = vocab.map(v => {
+      let s = v.word;
+      if (v.definition) s += ` (${v.definition})`;
+      if (v.example)    s += ` — e.g. "${v.example}"`;
+      return s;
+    });
+    lines.push(`Islamic Vocabulary (use naturally, do not define in prose): ${formatted.join(' | ')}`);
+  }
+
+  // ── Background rules ───────────────────────────────────────────────────────
+  if (bgRules) {
+    if (bgRules.tone)                  lines.push(`Scene Tone: ${bgRules.tone}`);
+    if (bgRules.locations?.length)     lines.push(`Preferred Locations: ${bgRules.locations.join(', ')}`);
+    if (bgRules.colorStyle)            lines.push(`Color Style: ${bgRules.colorStyle}`);
+    if (bgRules.lightingStyle)         lines.push(`Lighting: ${bgRules.lightingStyle}`);
+    if (bgRules.timeOfDay)             lines.push(`Default Time of Day: ${bgRules.timeOfDay}`);
+    if (bgRules.cameraHint)            lines.push(`Default Camera Hint: ${bgRules.cameraHint}`);
+    if (bgRules.keyFeatures?.length)   lines.push(`Key Visual Features: ${bgRules.keyFeatures.join(', ')}`);
+    if (bgRules.additionalNotes)       lines.push(`Scene Notes: ${bgRules.additionalNotes}`);
+    if (bgRules.avoidBackgrounds?.length) lines.push(`⛔ Avoid Backgrounds: ${bgRules.avoidBackgrounds.join(', ')}`);
+    if (bgRules.universalRules)        lines.push(`Universal Scene Rule: ${bgRules.universalRules}`);
+  }
+
+  // ── Format rules (book-type-specific) ─────────────────────────────────────
+  if (rules.mode === 'chapter-book') {
+    if (rules.wordCountTarget)         lines.push(`Total Word Count Target: ${rules.wordCountTarget}`);
+    if (rules.sceneLength)             lines.push(`Scene Length: ${rules.sceneLength}`);
+    if (rules.chapterRhythm?.length)   lines.push(`Chapter Rhythm: ${rules.chapterRhythm.join(' → ')}`);
+    if (rules.frontMatter?.length)     lines.push(`Front Matter: ${rules.frontMatter.join(', ')}`);
+    if (rules.endMatter?.length)       lines.push(`End Matter: ${rules.endMatter.join(', ')}`);
+  } else if (rules.mode === 'picture-book') {
+    if (rules.wordCountTarget)         lines.push(`Total Word Count: ${rules.wordCountTarget}`);
+    if (rules.pageFlow?.length)        lines.push(`Page Flow: ${rules.pageFlow.join(' → ')}`);
+    if (rules.segmentCount)            lines.push(`Segment Count: ${rules.segmentCount}`);
+  } else if (rules.mode === 'spreads-only') {
+    if (rules.maxWordsPerSpread)       lines.push(`Max Words Per Spread: ${rules.maxWordsPerSpread}`);
+    if (rules.pageLayout)              lines.push(`Page Layout: ${rules.pageLayout}`);
+    if (rules.readingType)             lines.push(`Reading Type: ${rules.readingType}`);
+    if (rules.illustrationStyle)       lines.push(`Illustration Style: ${rules.illustrationStyle}`);
+    if (rules.colorPalette)            lines.push(`Color Palette: ${rules.colorPalette}`);
+    if (rules.specialRules?.length)    lines.push(`Special Rules: ${rules.specialRules.join('; ')}`);
+    if (rules.reflectionPrompt)        lines.push(`Reflection Prompt (last spread): "${rules.reflectionPrompt}"`);
+    if (rules.bonusPageContent)        lines.push(`Bonus Page: ${rules.bonusPageContent}`);
+    if (rules.emotionalPattern) {
+      const ep = rules.emotionalPattern;
+      const parts = [ep.conflictOrQuestion, ep.emotionReaction, ep.resolve].filter(Boolean);
+      if (parts.length) lines.push(`Emotional Pattern Per Segment: ${parts.join(' → ')}`);
+    }
+  }
+
+  // ── Character guides ───────────────────────────────────────────────────────
+  for (const [name, g] of Object.entries(guideMap)) {
+    lines.push(`\nCharacter Guide — ${name}:`);
+    if (g.speakingStyle)             lines.push(`  Speaking Style: ${g.speakingStyle}`);
+    if (g.dialogueExamples?.length)  lines.push(`  Dialogue Examples: ${g.dialogueExamples.join(' | ')}`);
+    if (g.personalityNotes?.length)  lines.push(`  Personality: ${g.personalityNotes.join('; ')}`);
+    if (g.literaryRole)              lines.push(`  Literary Role: ${g.literaryRole}`);
+    if (g.moreInfo)                  lines.push(`  Background: ${g.moreInfo}`);
+    const f = g.faithGuide;
+    if (f) {
+      if (f.faithTone)                 lines.push(`  Faith Tone: ${f.faithTone}`);
+      if (f.duaStyle)                  lines.push(`  Du'a Style: ${f.duaStyle}`);
+      if (f.islamicTraits?.length)     lines.push(`  Islamic Traits: ${f.islamicTraits.join(', ')}`);
+      if (f.faithExpressions?.length)  lines.push(`  Faith Expressions: ${f.faithExpressions.join('; ')}`);
+      if (f.faithExamples?.length)     lines.push(`  Faith Examples: ${f.faithExamples.join(' | ')}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// Keep legacy alias so any code calling buildKbOpts(project, chars) still resolves
+// to the correct ageGroup without crashing. New prompt builders use buildKbBlock directly.
 function buildKbOpts(project, characters = []) {
-  const profile = getAgeProfile(project?.ageRange);
-  let ageGroup = 'middleGrade';
-  if (profile.mode === 'spreads-only') ageGroup = 'underSix';
-  else if (profile.mode === 'picture-book') ageGroup = 'junior';
+  const { mode } = getAgeProfile(project?.ageRange);
   return {
-    ageGroup,
+    ageGroup: mode === 'spreads-only' ? 'underSix' : mode === 'picture-book' ? 'junior' : 'middleGrade',
     characterNames: characters.map(c => c.name).filter(Boolean),
   };
 }
@@ -561,7 +933,7 @@ function normalizeOutlineChapter(ch, idx, characters = [], profile) {
 
 function normalizeStoryPayload(parsed, ctx) {
   const profile = getAgeProfile(ctx.project.ageRange);
-  const chapterCount = Number(ctx.project.chapterCount) || (profile.mode === 'chapter-book' ? 4 : 3);
+  const chapterCount = resolveChapterCount(ctx.project, ctx.kb);
 
   const out = {
     bookTitle: str(parsed.bookTitle || ctx.project.title),
@@ -636,7 +1008,7 @@ function normalizeOutlinePayload(parsed, ctx) {
     };
   }
 
-  const chapterCount = Number(parsed.chapterCount) || Number(ctx.project.chapterCount) || 4;
+  const chapterCount = Number(parsed.chapterCount) || resolveChapterCount(ctx.project, ctx.kb);
   const rawChapters = normArr(parsed.chapters).slice(0, chapterCount);
   const padded = rawChapters.length
     ? rawChapters
@@ -801,42 +1173,38 @@ function getSpreadSourceForRerun(project, chapterIndex) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildStoryPrompt({ project, universe, characters, kb }, storyIdea) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+  const rules   = resolveFormattingRules(project, kb);
+  const arabic  = buildArabicSafetyBlockFromKB(kb);
   const charBlock = characterBlock(characters);
 
   const poseConstraint = characters.length
     ? `POSE RULES:
 - Use ONLY these approved poses: ${[...new Set(characters.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
 - Every illustrationMoment MUST include a valid poseKey from the list above
-- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+- The story prose must DESCRIBE the action matching the poseKey`
     : '';
 
-  const formatDesc = profile.mode === 'spreads-only'
+  // Format description derived from resolved rules (KB-first)
+  const formatDesc = rules.mode === 'spreads-only'
     ? `SPREADS-ONLY PICTURE BOOK for ages ${project.ageRange}:
   - NO chapters — just illustrated pages with short text
-  - Max ${profile.maxWords} words/page
-  - Simple, warm, complete sentences
-  - Each page is one natural, complete thought
-  - Story total: 300-500 words flowing narrative`
-    : profile.mode === 'picture-book'
+  - Max ${rules.maxWordsPerSpread} words/page${rules.pageLayout ? `\n  - Layout: ${rules.pageLayout}` : ''}
+  - Simple, warm, complete sentences — each page one complete thought
+  - Reading type: ${rules.readingType}${rules.wordCountTarget ? `\n  - Story total target: ${rules.wordCountTarget}` : '\n  - Story total: 300–500 words flowing narrative'}`
+    : rules.mode === 'picture-book'
       ? `PICTURE BOOK for ages ${project.ageRange}:
   - Simple chapters with illustrated spreads
-  - Max ${profile.maxWords} words per spread
-  - Warm storytelling with clear scenes
-  - Story total: 400-700 words`
+  - Max ${rules.maxWordsPerSpread} words per spread${rules.wordCountTarget ? `\n  - Total word target: ${rules.wordCountTarget}` : '\n  - Story total: 400–700 words'}${rules.pageFlow.length ? `\n  - Page Flow: ${rules.pageFlow.join(' → ')}` : ''}`
       : `CHAPTER BOOK for ages ${project.ageRange}:
-  - storyText must be a strong full-book synopsis, not full chapter prose
-  - Full chapter prose is generated separately
-  - Keep storyText 500-900 words
-  - Return exact chapter outline with illustration moments`;
+  - storyText must be a full-book synopsis (not chapter prose)
+  - Chapters: ${rules.chapterCount}${rules.wordCountTarget ? `\n  - Total word target: ${rules.wordCountTarget}` : '\n  - Keep storyText 500–900 words'}${rules.chapterRhythm.length ? `\n  - Chapter Rhythm: ${rules.chapterRhythm.join(' → ')}` : ''}`;
 
   const system = `You are an expert Islamic children's book author.
 Book Format:
 ${formatDesc}
 
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, characters))}
+${buildKbBlock(project, kb, characters)}
 ${charBlock}
 ${poseConstraint}
 ${arabic}
@@ -847,17 +1215,12 @@ CRITICAL RULES:
 - Do NOT invent unnamed family members or generic labels
 - Output ONLY raw valid JSON. NO markdown fences. Start with { end with }`;
 
-  const chapterBookExtra = profile.mode === 'chapter-book' ? `
+  const chapterBookExtra = rules.mode === 'chapter-book' ? `
 This is a CHAPTER BOOK for ages ${project.ageRange}.
-The "storyText" field must be a SYNOPSIS (500-900 words), NOT full chapter prose.
-Also include "chapterOutline" with EXACTLY ${project.chapterCount || 4} chapters.
+The "storyText" field must be a SYNOPSIS (500–900 words), NOT full chapter prose.
+Also include "chapterOutline" with EXACTLY ${rules.chapterCount} chapters.${rules.chapterRhythm.length ? `\nFollow this chapter rhythm: ${rules.chapterRhythm.join(' → ')}` : ''}
 Each chapter must include:
-- title
-- goal
-- keyScene
-- islamicMoment
-- endingBeat
-- charactersInScene
+- title, goal, keyScene, islamicMoment, endingBeat, charactersInScene
 - illustrationMoments (max 2, object format only)` : '';
 
   const prompt = `Write an Islamic children's story from this idea:
@@ -871,21 +1234,21 @@ ${chapterBookExtra}
 
 The story must:
 - Be age-appropriate for ${project.ageRange}
-- Teach Islamic values naturally
+- Teach Islamic values naturally (use KB values if provided)
 - Feature only approved characters
-- Have a clear story arc
-- Include natural Islamic moments
-- End with a memorable moral
+- Use KB du'as at fitting story moments
+- Use KB vocabulary naturally in prose
+- Have a clear story arc with a memorable Islamic moral
 
 Respond ONLY with this JSON:
 {
   "bookTitle": "string",
   "synopsis": "2-3 sentence summary",
   "moral": "specific Islamic lesson",
-  "storyText": "${profile.mode === 'chapter-book' ? '500-900 word narrative synopsis of the full arc' : '300-600 word complete story'}",
-  "suggestedPageCount": ${profile.mode === 'chapter-book' ? 0 : 10},
-  "suggestedChapterCount": ${profile.mode === 'chapter-book' ? (project.chapterCount || 4) : 0},
-  "spreadOnly": ${profile.spreadOnly},
+  "storyText": "${rules.mode === 'chapter-book' ? '500–900 word narrative synopsis of the full arc' : '300–600 word complete story'}",
+  "suggestedPageCount": ${rules.mode === 'chapter-book' ? 0 : rules.pageCount},
+  "suggestedChapterCount": ${rules.mode === 'chapter-book' ? rules.chapterCount : 0},
+  "spreadOnly": ${rules.spreadOnly},
   "islamicTheme": {
     "concept": "string",
     "arabicPhrase": "approved exact Arabic only",
@@ -901,7 +1264,7 @@ Respond ONLY with this JSON:
       "gender": "boy|girl",
       "keyTraits": ["trait1", "trait2"]
     }
-  ]${profile.mode === 'chapter-book' ? `,
+  ]${rules.mode === 'chapter-book' ? `,
   "chapterOutline": [
     {
       "chapterNumber": 1,
@@ -933,37 +1296,36 @@ Respond ONLY with this JSON:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildSpreadPlanningPrompt({ project, universe, characters, kb }) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+  const rules  = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const charBlock = characterBlock(characters);
   const poseConstraint = characters.length
     ? `POSE RULES:
 - Use ONLY these approved poses: ${[...new Set(characters.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
-- Every illustrationMoment MUST include a valid poseKey from the list above
-- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+- Every spread MUST include a valid poseKey from the list above`
     : '';
   const storyText = project.artifacts?.storyText || project.artifacts?.outline?.synopsis || '';
   const bookStyle = project.bookStyle || {};
-  const pageCount = project.chapterCount || 10;
+  const spreadCount = rules.spreadCount;
 
-  const textRules = profile.mode === 'spreads-only'
+  const textRules = rules.mode === 'spreads-only'
     ? `TEXT RULES FOR AGE ${project.ageRange}:
 - Each page gets EXACTLY ONE complete natural sentence
-- Max ${profile.maxWords} words
-- Must be grammatically complete
-- Warm, gentle, clear`
+- Max ${rules.maxWordsPerSpread} words${rules.pageLayout ? `\n- Layout: ${rules.pageLayout}` : ''}
+- Reading type: ${rules.readingType}
+- Warm, gentle, grammatically complete`
     : `TEXT RULES FOR AGE ${project.ageRange}:
 - 1-2 complete sentences per spread
-- Max ${profile.maxWords} words
+- Max ${rules.maxWordsPerSpread} words${rules.pageFlow.length ? `\n- Follow page flow: ${rules.pageFlow.join(' → ')}` : ''}
 - Clear, warm narrative prose`;
 
   const system = `You are an expert Islamic children's picture book author and illustrator.
-Age: ${project.ageRange} — Mode: ${profile.mode}
+Age: ${project.ageRange} — Mode: ${rules.mode}
 
 ${textRules}
 
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, characters))}
+${buildKbBlock(project, kb, characters)}
 ${charBlock}
 ${poseConstraint}
 ${arabic}
@@ -971,10 +1333,11 @@ ${arabic}
 CRITICAL RULES:
 - Use only approved character names exactly
 - Every spread must include charactersInScene using approved names
+- Weave KB du'as and vocabulary naturally — do not force them
 - Return strict structured JSON only
 - Output ONLY raw valid JSON. Start with { end with }`;
 
-  const prompt = `Break this story into ${pageCount} illustrated spreads.
+  const prompt = `Break this story into ${spreadCount} illustrated spreads.
 
 STORY:
 "${storyText}"
@@ -988,12 +1351,12 @@ Recurring props: ${bookStyle.bookProps || 'none specified'}
 
 Respond ONLY with:
 {
-  "spreadOnly": ${profile.spreadOnly},
-  "totalSpreads": ${pageCount},
+  "spreadOnly": ${rules.spreadOnly},
+  "totalSpreads": ${spreadCount},
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "${profile.mode === 'spreads-only' ? `ONE complete natural sentence, max ${profile.maxWords} words` : `1-2 sentences, max ${profile.maxWords} words`}",
+      "text": "${rules.mode === 'spreads-only' ? `ONE complete natural sentence, max ${rules.maxWordsPerSpread} words` : `1-2 sentences, max ${rules.maxWordsPerSpread} words`}",
       "prompt": "instruction that produced this page text",
       "illustrationHint": "clear visual scene",
       "charactersInScene": ["exact approved character names only"],
@@ -1011,16 +1374,16 @@ Respond ONLY with:
   return { system, prompt };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════bu═══════════════════════════════════════════════════════════════
 // STEP 2b: PICTURE BOOK CHAPTER GENERATION
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildPictureBookChapterPrompt({ project, universe, characters, kb }, chapterIndex) {
-  const profile = getAgeProfile(project.ageRange);
+  const rules  = resolveFormattingRules(project, kb);
   const outline = project.artifacts?.outline;
   const outlineChapters = normArr(outline?.chapters);
   const chapterOutline = outlineChapters[chapterIndex];
-  const arabic = buildArabicBlock();
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const sceneChars = (chapterOutline?.charactersInScene || []).length
     ? characters.filter(c => chapterOutline.charactersInScene.includes(c.name))
     : characters;
@@ -1028,15 +1391,14 @@ function buildPictureBookChapterPrompt({ project, universe, characters, kb }, ch
   const poseConstraint = sceneChars.length
     ? `POSE RULES:
 - Use ONLY these approved poses: ${[...new Set(sceneChars.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
-- Every illustrationMoment MUST include a valid poseKey from the list above
-- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+- Every spread MUST include a valid poseKey from the list above`
     : '';
 
   const system = `You are an expert Islamic children's picture book author.
-PICTURE BOOK for ages ${project.ageRange}. MAX ${profile.maxWords} words per spread.
-Each spread = one illustrated page with 1-2 short sentences.
+PICTURE BOOK for ages ${project.ageRange}. MAX ${rules.maxWordsPerSpread} words per spread.
+Each spread = one illustrated page with 1-2 short sentences.${rules.pageLayout ? `\nPage Layout: ${rules.pageLayout}` : ''}${rules.pageFlow.length ? `\nPage Flow: ${rules.pageFlow.join(' → ')}` : ''}
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, sceneChars))}
+${buildKbBlock(project, kb, sceneChars)}
 ${characterBlock(sceneChars)}
 ${poseConstraint}
 ${arabic}
@@ -1044,6 +1406,7 @@ ${arabic}
 CRITICAL RULES:
 - Use charactersInScene, not charactersInSpread
 - Use only exact approved character names
+- Weave KB du'as and vocabulary naturally at fitting moments
 - Return strict raw JSON only`;
 
   return {
@@ -1052,8 +1415,9 @@ CRITICAL RULES:
 Chapter: ${chapterOutline?.title || `Chapter ${chapterIndex + 1}`}
 Goal: ${chapterOutline?.goal || ''}
 Key Scene: ${chapterOutline?.keyScene || ''}
+Islamic Moment: ${chapterOutline?.duaHint || 'A natural Islamic value or faith moment'}
 Characters in this chapter: ${sceneChars.map(c => c.name).join(', ')}
-MAX ${profile.maxWords} words per spread text.
+MAX ${rules.maxWordsPerSpread} words per spread text.
 
 Respond ONLY with:
 {
@@ -1064,7 +1428,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "1-2 clear sentences, max ${profile.maxWords} words",
+      "text": "1-2 clear sentences, max ${rules.maxWordsPerSpread} words",
       "prompt": "instruction used to write this spread",
       "illustrationHint": "detailed scene",
       "charactersInScene": ["exact approved names only"],
@@ -1086,37 +1450,17 @@ Respond ONLY with:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildChapterBookProsePrompt({ project, universe, characters, kb }, chapterIndex) {
-  const profile = getAgeProfile(project.ageRange);
-
-  // Override word targets from KB bookFormatting if set — KB values win over profile defaults
-  let minChapterWords = profile.minChapterWords;
-  let maxChapterWords = profile.maxChapterWords;
-  const kbFmt = kb?.bookFormatting?.middleGrade;
-  if (kbFmt) {
-    if (kbFmt.sceneLength) {
-      const parsed = parseInt(String(kbFmt.sceneLength).replace(/[^0-9]/g, ''), 10);
-      if (!isNaN(parsed) && parsed > 0) {
-        minChapterWords = Math.round(parsed * 0.85);
-        maxChapterWords = Math.round(parsed * 1.15);
-      }
-    } else if (kbFmt.wordCount && kbFmt.chapterRange) {
-      const total    = parseInt(String(kbFmt.wordCount).replace(/[^0-9]/g, ''), 10);
-      const chapters = parseInt(String(kbFmt.chapterRange).replace(/[^0-9]/g, ''), 10);
-      if (!isNaN(total) && !isNaN(chapters) && chapters > 0) {
-        const perChapter = Math.round(total / chapters);
-        minChapterWords = Math.round(perChapter * 0.85);
-        maxChapterWords = Math.round(perChapter * 1.15);
-      }
-    }
-  }
+  // All word targets, rhythm, and formatting come from resolved rules (KB-first)
+  const rules  = resolveFormattingRules(project, kb);
+  const { minChapterWords, maxChapterWords } = rules;
 
   const outline = project.artifacts?.outline || {};
   const chapterOutline = normArr(outline?.chapters || [])[chapterIndex];
   const storyText = project.artifacts?.storyText || '';
-  const arabic = buildArabicBlock();
+  const arabic    = buildArabicSafetyBlockFromKB(kb);
   const bookStyle = project.bookStyle || {};
 
-  const totalChapters = normArr(outline?.chapters || []).length || project.chapterCount || 4;
+  const totalChapters = normArr(outline?.chapters || []).length || rules.chapterCount;
 
   const previousChapters = normArr(project.artifacts?.chapters)
     .slice(0, chapterIndex)
@@ -1135,7 +1479,11 @@ function buildChapterBookProsePrompt({ project, universe, characters, kb }, chap
     ? `POSE RULES:
 - Use ONLY these approved poses: ${[...new Set(sceneChars.flatMap(c => c.approvedPoseKeys || []))].join(', ') || 'standing, sitting, walking, thinking, reading-quran, praying-salah'}
 - Every illustrationMoment MUST include a valid poseKey from the list above
-- The story prose must DESCRIBE the action matching the poseKey (e.g. poseKey="standing" → character stands; "praying-salah" → character prays)`
+- The story prose must DESCRIBE the action matching the poseKey`
+    : '';
+
+  const rhythmHint = rules.chapterRhythm.length
+    ? `Chapter Rhythm Guide: ${rules.chapterRhythm.join(' → ')}`
     : '';
 
   const system = `You are an expert Islamic children's chapter book author for ages ${project.ageRange}.
@@ -1144,16 +1492,17 @@ This is a REAL CHAPTER BOOK, not a spread-based picture book.
 
 CRITICAL WRITING RULES:
 - Write ONE full prose chapter
-- Length: ${minChapterWords}-${maxChapterWords} words
+- Length: ${minChapterWords}–${maxChapterWords} words${rules.sceneLength ? ` (KB scene length: ${rules.sceneLength})` : ''}
 - Third-person past tense
 - Novel-like, immersive, warm, adventurous
 - Preserve continuity with earlier chapters
 - Use strong scene-setting, dialogue, emotion, atmosphere
-- Integrate Islamic values naturally
+- Integrate Islamic values, KB du'as, and KB vocabulary naturally
 - End with curiosity, suspense, discovery, or emotional shift
+${rhythmHint}
 
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, sceneChars))}
+${buildKbBlock(project, kb, sceneChars)}
 ${characterBlock(sceneChars)}
 ${poseConstraint}
 ${arabic}
@@ -1218,26 +1567,33 @@ Respond ONLY with this JSON:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildSpreadsOnlyPrompt({ project, universe, characters, kb }) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+  const rules  = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const outline = project.artifacts?.outline;
-  const count = normArr(outline?.spreads || []).length || project.chapterCount || 10;
+  const count = normArr(outline?.spreads || []).length || rules.spreadCount;
+
+  const emotionalPatternHint = rules.emotionalPattern
+    ? `Emotional Pattern Per Segment: ${[rules.emotionalPattern.conflictOrQuestion, rules.emotionalPattern.emotionReaction, rules.emotionalPattern.resolve].filter(Boolean).join(' → ')}`
+    : '';
 
   const system = `You are an expert Islamic picture book author for very young children (ages ${project.ageRange}).
 
 SENTENCE RULES:
 - Every "text" field MUST be one complete grammatical sentence
-- Max ${profile.maxWords} words
-- Each sentence should carry one clear warm emotional moment
-- The ${count} sentences together should tell a complete story arc
+- Max ${rules.maxWordsPerSpread} words${rules.pageLayout ? `\n- Layout: ${rules.pageLayout}` : ''}
+- Reading type: ${rules.readingType}
+- Each sentence carries one clear warm emotional moment
+- The ${count} sentences together tell a complete story arc
+${emotionalPatternHint}${rules.reflectionPrompt ? `\n- Final spread reflection prompt: "${rules.reflectionPrompt}"` : ''}${rules.bonusPageContent ? `\n- Bonus page: ${rules.bonusPageContent}` : ''}${rules.specialRules.length ? `\n- Special Rules: ${rules.specialRules.join('; ')}` : ''}
 
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, characters))}
+${buildKbBlock(project, kb, characters)}
 ${characterBlock(characters)}
 ${arabic}
 
 CRITICAL RULES:
 - Use only exact approved character names
+- Weave KB du'as and vocabulary naturally at fitting moments
 - Return strict raw JSON only`;
 
   return {
@@ -1254,7 +1610,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "ONE complete grammatical sentence, max ${profile.maxWords} words",
+      "text": "ONE complete grammatical sentence, max ${rules.maxWordsPerSpread} words",
       "prompt": "instruction for this page",
       "illustrationHint": "detailed scene",
       "textPosition": "bottom|top",
@@ -1274,12 +1630,12 @@ Respond ONLY with:
 // ─── Outline ──────────────────────────────────────────────────────────────────
 
 function buildOutlinePrompt({ project, universe, characters, kb }) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+  const rules  = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
 
   const system = `You are an expert Islamic children's book author.
 ${universeBlock(universe)}
-${kbBlock(kb, buildKbOpts(project, characters))}
+${buildKbBlock(project, kb, characters)}
 ${characterBlock(characters)}
 ${arabic}
 
@@ -1287,11 +1643,11 @@ CRITICAL RULES:
 - Use exact approved character names only
 - Return strict raw valid JSON only`;
 
-  const prompt = profile.spreadOnly ? `
+  const prompt = rules.spreadOnly ? `
 Create a spreads-only picture book outline for ages ${project.ageRange}.
 Title: "${project.title}"
 Learning Objective: ${project.learningObjective || 'Islamic values'}
-NO chapters — just ${project.chapterCount || 10} illustrated spreads.
+NO chapters — just ${rules.spreadCount} illustrated spreads.${rules.pageLayout ? `\nPage Layout: ${rules.pageLayout}` : ''}${rules.maxWordsPerSpread ? `\nMax words per spread: ${rules.maxWordsPerSpread}` : ''}
 
 Respond ONLY with:
 {
@@ -1299,7 +1655,7 @@ Respond ONLY with:
   "moral": "string",
   "synopsis": "string",
   "spreadOnly": true,
-  "totalSpreads": ${project.chapterCount || 10},
+  "totalSpreads": ${rules.spreadCount},
   "dedicationMessage": "string",
   "islamicTheme": {
     "title": "string",
@@ -1320,20 +1676,20 @@ Respond ONLY with:
     }
   ]
 }` : `
-Create EXACTLY ${project.chapterCount || 4} chapters for "${project.title}".
+Create EXACTLY ${rules.chapterCount} chapters for "${project.title}".
 Age Range: ${project.ageRange}
-Mode: ${profile.mode}
-
-${profile.mode === 'chapter-book' ? `
+Mode: ${rules.mode}
+${rules.chapterRhythm.length ? `Follow this chapter rhythm: ${rules.chapterRhythm.join(' → ')}` : ''}
+${rules.mode === 'chapter-book' ? `
 CHAPTER BOOK RULES:
-- Each chapter supports later full prose generation
+- Each chapter supports later full prose generation (${rules.minChapterWords}–${rules.maxChapterWords} words each)
 - Include 1-2 illustration moments only
 - Use exact approved character names only
-- Each chapter ends with momentum
+- Each chapter ends with momentum${rules.frontMatter.length ? `\n- Include front matter: ${rules.frontMatter.join(', ')}` : ''}${rules.endMatter.length ? `\n- Include end matter: ${rules.endMatter.join(', ')}` : ''}
 ` : `
 PICTURE BOOK RULES:
-- Each chapter will later become short illustrated spreads
-- Use exact approved character names only
+- Each chapter will later become short illustrated spreads (max ${rules.maxWordsPerSpread} words/spread)
+- Use exact approved character names only${rules.pageFlow.length ? `\n- Page Flow: ${rules.pageFlow.join(' → ')}` : ''}
 `}
 
 Respond ONLY with:
@@ -1342,7 +1698,7 @@ Respond ONLY with:
   "moral": "string",
   "synopsis": "string",
   "spreadOnly": false,
-  "chapterCount": ${project.chapterCount || 4},
+  "chapterCount": ${rules.chapterCount},
   "dedicationMessage": "string",
   "islamicTheme": {
     "title": "string",
@@ -1376,15 +1732,15 @@ Respond ONLY with:
     }
   ]
 }
-IMPORTANT: chapters array MUST have exactly ${project.chapterCount || 4} items.`;
+IMPORTANT: chapters array MUST have exactly ${rules.chapterCount} items.`;
 
   return { system, prompt };
 }
 
 // ─── Dedication ───────────────────────────────────────────────────────────────
 
-function buildDedicationPrompt({ project }) {
-  const arabic = buildArabicBlock();
+function buildDedicationPrompt({ project, kb }) {
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   return {
     system: `You are a warm Islamic children's book author. Output ONLY raw valid JSON. ${arabic}`,
     prompt: `Write dedication for "${project.title}" by ${project.authorName || 'NoorStudio'}.
@@ -1401,12 +1757,12 @@ Respond ONLY with:
 // ─── Islamic Theme Page ───────────────────────────────────────────────────────
 
 function buildThemePagePrompt({ project, kb, characters = [] }) {
-  const arabic = buildArabicBlock();
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   return {
     system: `You are an Islamic educator for children ages ${project.ageRange}. Output ONLY raw valid JSON. ${arabic}`,
     prompt: `Create Islamic theme reference page for "${project.title}".
 Objective: ${project.learningObjective || 'Islamic values'}
-${kb ? kbBlock(kb, buildKbOpts(project, characters)) : ''}
+${kb ? buildKbBlock(project, kb, characters) : ''}
 Respond ONLY with:
 {
   "sectionTitle": "string",
@@ -1523,8 +1879,8 @@ Respond ONLY with:
 // }
 
 function buildHumanizePrompt({ project, kb, characters }, chapterIndex) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+  const rules  = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
   const chaptersArr = normArr(project.artifacts?.chapters);
   const chapter = chaptersArr[chapterIndex];
@@ -1564,7 +1920,7 @@ YOU MUST make ALL of these improvements:
 
 RULES:
 - The rewritten chapterText MUST be noticeably different from the original
-- Length must remain ${profile.minChapterWords}-${profile.maxChapterWords} words
+- Length must remain ${rules.minChapterWords}-${rules.maxChapterWords} words
 - Avoid: ${avoidTopics}
 - DO NOT reproduce the original text verbatim
 
@@ -1612,7 +1968,7 @@ YOU MUST improve EVERY spread text by:
 1. Making sentences more vivid and warm
 2. Adding sensory or emotional detail
 3. Improving rhythm and flow
-4. Keeping max ${profile.maxWords} words per spread
+4. Keeping max ${rules.maxWordsPerSpread} words per spread
 5. Keeping all approved character names exactly
 
 Avoid: ${avoidTopics}
@@ -1626,7 +1982,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "REWRITTEN improved text, max ${profile.maxWords} words — must differ from original",
+      "text": "REWRITTEN improved text, max ${rules.maxWordsPerSpread} words — must differ from original",
       "prompt": "updated instruction",
       "illustrationHint": "string",
       "charactersInScene": ["exact approved names only"],
@@ -1696,16 +2052,16 @@ Respond ONLY with:
 // }
 
 function buildSpreadHumanizePrompt({ project, characters, kb }) {
-  const profile = getAgeProfile(project.ageRange);
+  const rules  = resolveFormattingRules(project, kb);
   const spreads = normArr(project.artifacts?.spreads || []);
-  const arabic = buildArabicBlock();
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
 
   const system = `You are a professional Islamic picture book editor for ages ${project.ageRange}.
 SPREADS-ONLY book — ${spreads.length} pages, NO chapters.
 
 You MUST rewrite and improve every page text. DO NOT return the same text.
-EACH "text" MUST BE one complete, grammatically correct sentence (max ${profile.maxWords} words).
+EACH "text" MUST BE one complete, grammatically correct sentence (max ${rules.maxWordsPerSpread} words).
 
 ${characterBlock(characters)}
 ${arabic}
@@ -1724,7 +2080,7 @@ YOU MUST improve EVERY spread by:
 3. Adding one specific sensory or emotional detail per page
 4. Ensuring each sentence flows naturally from the previous
 5. Keeping all approved character names exactly as-is
-6. Keeping max ${profile.maxWords} words per page
+6. Keeping max ${rules.maxWordsPerSpread} words per page
 
 Avoid: ${avoidTopics}
 
@@ -1734,7 +2090,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "ONE REWRITTEN complete grammatical sentence — must differ from original, max ${profile.maxWords} words",
+      "text": "ONE REWRITTEN complete grammatical sentence — must differ from original, max ${rules.maxWordsPerSpread} words",
       "prompt": "copy or refine original instruction",
       "illustrationHint": "same scene intent, can be improved",
       "textPosition": "bottom|top",
@@ -1754,16 +2110,16 @@ Respond ONLY with:
 
 // ─── Spread rerun ─────────────────────────────────────────────────────────────
 
-function buildSpreadRerunPrompt({ project, characters }, chapterIndex, spreadIndex, customPrompt) {
-  const profile = getAgeProfile(project.ageRange);
-  const arabic = buildArabicBlock();
+function buildSpreadRerunPrompt({ project, kb, characters }, chapterIndex, spreadIndex, customPrompt) {
+  const rules  = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const source = getSpreadSourceForRerun(project, chapterIndex);
   const current = source.spreads[spreadIndex] || {};
 
-  const system = `You are an expert Islamic ${profile.mode === 'picture-book' ? 'picture book' : 'spreads-only picture book'} author for ages ${project.ageRange}.
-${profile.mode === 'spreads-only'
-  ? `CRITICAL: The "text" field must be ONE complete natural sentence, max ${profile.maxWords} words.`
-  : `MAX ${profile.maxWords} words per page.`}
+  const system = `You are an expert Islamic ${rules.mode === 'picture-book' ? 'picture book' : 'spreads-only picture book'} author for ages ${project.ageRange}.
+${rules.mode === 'spreads-only'
+  ? `CRITICAL: The "text" field must be ONE complete natural sentence, max ${rules.maxWordsPerSpread} words.`
+  : `MAX ${rules.maxWordsPerSpread} words per page.`}
 Output ONLY raw valid JSON.
 ${characterBlock(characters)}
 ${arabic}`;
@@ -1918,7 +2274,18 @@ export async function generateStageText({
 
   let outputTokens;
   if (effectiveStage === 'story' && profile.mode === 'chapter-book') {
-    outputTokens = Math.max(budget.maxOutputTokens || 0, 6000);
+    // Chapter books need space for full synopsis + all chapter outline entries.
+    // Scale budget with chapter count from KB, capped at Claude's 8192 token limit.
+    const storyChapterCount = resolveChapterCount(ctx.project, ctx.kb);
+    // ~3500 base (synopsis + metadata) + ~350 tokens per chapter outline entry
+    const dynamicMin = Math.min(3500 + storyChapterCount * 350, 8192);
+    outputTokens = Math.max(budget.maxOutputTokens || 0, dynamicMin);
+  } else if (effectiveStage === 'spreadPlanning') {
+    // Each spread needs ~250 tokens (text, hint, characters, emotions, scene fields).
+    // Scale with spread count, floor at 4000, cap at 8192.
+    const spreadCount = Number(ctx.project.chapterCount) || 10;
+    const dynamicMin = Math.min(2000 + spreadCount * 250, 8192);
+    outputTokens = Math.max(budget.maxOutputTokens || 0, dynamicMin);
   } else if ((effectiveStage === 'chapter' || effectiveStage === 'chapters') && profile.mode === 'chapter-book') {
     outputTokens = Math.max(budget.maxOutputTokens || 0, 7000);
   } else if (effectiveStage === 'chapter' || effectiveStage === 'chapters') {

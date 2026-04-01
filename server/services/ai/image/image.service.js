@@ -251,11 +251,13 @@ function describeCharacter(c) {
     `  Eyebrow style: ${safeStr(vd.eyebrowStyle) || 'N/A'}`,
     `  Nose style: ${safeStr(vd.noseStyle) || 'N/A'}`,
     `  Cheek style: ${safeStr(vd.cheekStyle) || 'N/A'}`,
-    `  Hair style: ${safeStr(vd.hairStyle) || 'N/A'}`,
-    `  Hair color: ${safeStr(vd.hairColor) || 'N/A'}`,
+    // Hair — hard lock, same language as glasses/facial hair
+    safeStr(vd.hijabStyle)
+      ? `  HIJAB LOCK — ALWAYS WEARING: ${safeStr(vd.hijabStyle)} in ${safeStr(vd.hijabColor) || 'same color'} — never remove, never change style or color`
+      : safeStr(vd.hairStyle)
+        ? `  HAIR LOCK — ALWAYS: ${safeStr(vd.hairStyle)} in ${safeStr(vd.hairColor) || 'natural color'} — NEVER change hairstyle, NEVER change hair color between images — zero variation allowed`
+        : `  HAIR: match reference image exactly — NEVER randomise hairstyle`,
     `  Hair visibility: ${safeStr(vd.hairVisibility) || 'N/A'}`,
-    `  Hijab style: ${safeStr(vd.hijabStyle) || 'N/A'}`,
-    `  Hijab color: ${safeStr(vd.hijabColor) || 'N/A'}`,
     // Facial hair — explicit lock either way so AI never randomises
     safeStr(vd.facialHair)
       ? `  FACIAL HAIR LOCK — ALWAYS SHOW: ${safeStr(vd.facialHair)} — never remove, never change style or color`
@@ -270,11 +272,12 @@ function describeCharacter(c) {
     `  Shoes: ${safeStr(vd.shoeType) || 'N/A'} (${safeStr(vd.shoeColor) || 'N/A'})`,
     `  Outfit rules: ${safeStr(vd.outfitRules) || 'N/A'}`,
     `  Outfit color lock: ${outfitColor}`,
-    `  Body build: ${safeStr(vd.bodyBuild) || 'N/A'}`,
+    // Body build + weight — hard lock
+    `  BODY LOCK — build: ${safeStr(vd.bodyBuild) || 'medium'}, weight category: ${safeStr(vd.weightCategory) || 'average'} — NEVER alter body weight, muscle mass, or proportions from scene to scene`,
+    // Height — explicit cm or relative feel, always locked
     vd.heightCm > 0
-      ? `  Height: EXACTLY ${vd.heightCm}cm — LOCK THIS HEIGHT, must appear at this height relative to every other character in the scene`
-      : `  Height feel: ${safeStr(vd.heightFeel) || 'N/A'}`,
-    `  Weight/build category: ${safeStr(vd.weightCategory) || 'N/A'}`,
+      ? `  HEIGHT LOCK — EXACTLY ${vd.heightCm}cm — this character must appear at this EXACT height relative to every other character in every scene`
+      : `  HEIGHT LOCK — feel: ${safeStr(vd.heightFeel) || 'average'} — NEVER change apparent height between images`,
     `  Accessories: ${formatAccessories(vd)}`,
     `  Palette notes: ${safeStr(vd.paletteNotes) || 'none'}`,
     mod.hijabAlways ? `  Hijab: ALWAYS visible` : '',
@@ -289,25 +292,74 @@ function buildOutfitQuickRef(characters) {
 
   const lines = characters.map((c) => {
     const vd = c.visualDNA || {};
+    const hairLock = safeStr(vd.hijabStyle)
+      ? `HIJAB: ${safeStr(vd.hijabStyle)} ${safeStr(vd.hijabColor) || ''} — LOCKED`
+      : `HAIR: ${safeStr(vd.hairStyle) || 'match ref'} ${safeStr(vd.hairColor) || ''} — LOCKED`;
     return [
       `• ${c.name}:`,
       `  - Top: ${safeStr(vd.topGarmentType) || 'N/A'} (${safeStr(vd.topGarmentColor) || 'N/A'})`,
       `  - Bottom: ${safeStr(vd.bottomGarmentType) || 'N/A'} (${safeStr(vd.bottomGarmentColor) || 'N/A'})`,
       `  - Shoes: ${safeStr(vd.shoeType) || 'N/A'} (${safeStr(vd.shoeColor) || 'N/A'})`,
-      `  - Hijab: ${safeStr(vd.hijabStyle) || 'none'} (${safeStr(vd.hijabColor) || 'N/A'})`,
-      `  - Hair: ${safeStr(vd.hairStyle) || 'N/A'} (${safeStr(vd.hairColor) || 'N/A'})`,
+      `  - ${hairLock}`,
+      `  - Body: ${safeStr(vd.weightCategory) || 'average'} build — LOCKED`,
     ].join('\n');
   });
 
   return `
-OUTFIT LOCK — ABSOLUTE
+OUTFIT & APPEARANCE LOCK — ABSOLUTE — SAME IN EVERY IMAGE
 ${lines.join('\n')}
 Rules:
 • NEVER redesign clothing
 • NEVER change colors
 • NEVER replace garments
 • NEVER add random accessories
+• NEVER change hairstyle, hair color, or hair length
+• NEVER alter body weight, build, or proportions
 `.trim();
+}
+
+function buildHeightHierarchy(characters) {
+  if (!characters?.length) return '';
+  // Sort tallest → shortest using heightCm when available
+  const withHeight = characters.map((c) => ({
+    name: c.name,
+    cm: Number(c.visualDNA?.heightCm) || 0,
+    feel: safeStr(c.visualDNA?.heightFeel) || '',
+    ageRange: c.ageRange || '',
+  }));
+  const hasCm = withHeight.some((c) => c.cm > 0);
+  const sorted = [...withHeight].sort((a, b) => {
+    if (hasCm) return b.cm - a.cm;
+    return 0; // can't sort without data — keep declaration order
+  });
+
+  const lines = sorted.map((c, i) => {
+    if (c.cm > 0) return `• ${c.name}: ${c.cm}cm`;
+    if (c.feel) return `• ${c.name}: ${c.feel}`;
+    // Derive from age range as last resort
+    const ageLow = parseInt(String(c.ageRange).split('-')[0], 10) || 10;
+    return `• ${c.name}: age ${c.ageRange || 'unknown'} — scale height to match age`;
+  });
+
+  const relativeLines = sorted.length > 1
+    ? sorted.map((c, i) => {
+        if (i === 0) return `• ${c.name} is the TALLEST character in this scene`;
+        const prev = sorted[i - 1];
+        if (c.cm > 0 && prev.cm > 0) {
+          const diff = prev.cm - c.cm;
+          return `• ${c.name} is ${diff}cm SHORTER than ${prev.name} — always visibly shorter`;
+        }
+        return `• ${c.name} is SHORTER than ${prev.name} — always visibly shorter in frame`;
+      })
+    : [];
+
+  return [
+    'HEIGHT HIERARCHY — ABSOLUTE LOCK — maintain in EVERY image:',
+    lines.join('\n'),
+    relativeLines.length ? '\nRelative heights:' : '',
+    relativeLines.join('\n'),
+    'NEVER let character heights swap, drift, or equalise between images.',
+  ].filter(Boolean).join('\n');
 }
 
 function buildCharacterLockBlock(characters) {
@@ -315,6 +367,7 @@ function buildCharacterLockBlock(characters) {
 
   const approvedNames = characters.map((c) => c.name).join(', ');
   const descriptions = characters.map(describeCharacter).join('\n\n');
+  const heightHierarchy = buildHeightHierarchy(characters);
 
   const masterNotes = characters
     .filter((c) => c.promptConfig?.masterSystemNote)
@@ -331,11 +384,16 @@ Character details:
 ${descriptions}
 ${masterNotes ? `\nCHARACTER CUSTOM RULES:\n${masterNotes}` : ''}
 
+${heightHierarchy}
+
 Rules:
 • Use ONLY the approved characters needed for this scene
 • Do NOT invent extra people
 • Do NOT add background people, silhouettes, crowd, or duplicates
-• Keep exact same face, age appearance, skin tone, eye color, hair/hijab, outfit, colors, and body proportions
+• Keep exact same face, age appearance, skin tone, eye color, hair style, hair color, outfit, colors, and body proportions
+• HAIRSTYLE IS LOCKED — the same cut, length, and texture must appear in every single image
+• BODY WEIGHT AND BUILD ARE LOCKED — never make a character thinner, heavier, taller, or shorter than defined
+• HEIGHT RATIOS ARE LOCKED — the taller character must always appear taller in every frame
 • Match references exactly while only changing pose, angle, expression, and action
 • NEVER change a character's age, height, skin tone, or face shape from one image to another
 • NEVER redesign clothing or accessories between images
@@ -1783,7 +1841,7 @@ export async function generateStageImage({
         });
       } else {
         const moments = getChapterIllustrationMoments(chapterData, chapterContent_, project.ageRange);
-        const moment = moments[spreadIndex] || moments[0];
+        let moment = moments[spreadIndex] || moments[0];
 
         const sceneSelection = buildSceneSelection(allCharacters, {
           moment,

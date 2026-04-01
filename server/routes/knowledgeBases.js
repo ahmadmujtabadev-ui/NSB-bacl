@@ -9,7 +9,7 @@ router.get('/', async (req, res, next) => {
   try {
     const { universeId } = req.query;
     const filter = { userId: req.user._id };
-    if (universeId) filter.universeId = universeId;
+    if (universeId && /^[0-9a-fA-F]{24}$/.test(universeId)) filter.universeId = universeId;
     const kbs = await KnowledgeBase.find(filter).sort({ updatedAt: -1 });
     res.json(kbs);
   } catch (e) { next(e); }

@@ -19,7 +19,8 @@ import paymentsRoutes from './routes/payments.js';
 import webhooksRoutes from './routes/webhooks.js';
 import adminRoutes from './routes/admin.js';
 import aiRoutes from './routes/ai/index.js';
-import aiReview from './routes/project-review.js'
+import aiReview from './routes/project-review.js';
+import characterTemplatesRoutes from './routes/characterTemplates.js';
 
 const app = express();
 
@@ -55,6 +56,7 @@ app.use('/api/projects', authenticate, aiReview );   // ← page-level editing &
 app.use('/api/exports', authenticate, exportsRoutes);
 app.use('/api/payments', authenticate, paymentsRoutes);
 app.use('/api/admin', authenticate, adminRoutes);
+app.use('/api/character-templates', authenticate, characterTemplatesRoutes);
 app.use('/api/ai', authenticate, aiRoutes);
 
 // ─── Error Handler ───────────────────────────────────────────────────────────

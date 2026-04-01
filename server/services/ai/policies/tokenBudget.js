@@ -4,11 +4,13 @@
  * maxOutputTokens: cap Claude's response.
  */
 export const AI_TOKEN_BUDGETS = {
-  outline:       { maxPromptTokens: 4000,  maxOutputTokens: 2000 },
-  chapter:       { maxPromptTokens: 6000,  maxOutputTokens: 3000 },
-  humanize:      { maxPromptTokens: 8000,  maxOutputTokens: 3000 },
-  illustrations: { maxPromptTokens: 2000,  maxOutputTokens: 500  },
-  cover:         { maxPromptTokens: 2000,  maxOutputTokens: 500  },
+  story:         { maxPromptTokens: 12000, maxOutputTokens: 8000  },
+  outline:       { maxPromptTokens: 8000,  maxOutputTokens: 3000  },
+  spreadPlanning:{ maxPromptTokens: 10000, maxOutputTokens: 8000  },
+  chapter:       { maxPromptTokens: 8000,  maxOutputTokens: 3000  },
+  humanize:      { maxPromptTokens: 10000, maxOutputTokens: 3000  },
+  illustrations: { maxPromptTokens: 2000,  maxOutputTokens: 500   },
+  cover:         { maxPromptTokens: 2000,  maxOutputTokens: 500   },
 };
 
 /**

@@ -1414,7 +1414,14 @@ router.post('/:id/review/illustrations/:key/regenerate', async (req, res, next) 
 
         const ci = Number(node.chapterIndex ?? 0);
         const si = Number(node.spreadIndex ?? 0);
-        const basePrompt = str(req.body.prompt || node.current?.prompt || '');
+
+        // Auto-assembled illustration prompts contain these markers (from NO_BORDER_BLOCK / buildSpreadPrompt).
+        // If the stored prompt is auto-assembled and the user didn't send a new one, ignore it
+        // so generateStageImage rebuilds fresh from current character data (picks up appearance changes).
+        const ILLUS_AUTO_MARKERS = ['FRAMING RULES:', 'CROSS-PAGE ANCHOR', 'CHARACTER CONSISTENCY LAW', 'STYLE LOCK'];
+        const storedPrompt = str(node.current?.prompt || '');
+        const isAutoAssembled = ILLUS_AUTO_MARKERS.some((m) => storedPrompt.includes(m));
+        const basePrompt = str(req.body.prompt || (isAutoAssembled ? '' : storedPrompt));
 
         const arts = project.artifacts || {};
         const humanizedArr = normArr(arts.humanized);
