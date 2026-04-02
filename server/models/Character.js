@@ -80,7 +80,7 @@ const schema = new mongoose.Schema(
       heightFeel: { type: String, default: '' },
       heightCm: { type: Number, default: 0, min: 0, max: 250 },
       heightFeet: { type: Number, default: 0, min: 0, max: 9 },
-      weightKg: { type: Number, default: 0, min: 0, max: 300 },
+      weightKg: { type: Number, default: 0, min: 0, max: 500 },
       weightCategory: { type: String, default: '' }, // derived from BMI — do NOT set by user
 
       // Facial features — explicit locks so AI never randomises these
@@ -133,6 +133,9 @@ const schema = new mongoose.Schema(
       enum: ['draft', 'generated', 'approved'],
       default: 'draft',
     },
+
+    // Set when this character has been published to the shared template library
+    publishedAsTemplateId: { type: mongoose.Schema.Types.ObjectId, ref: 'CharacterTemplate', default: null },
   },
   { timestamps: true }
 );

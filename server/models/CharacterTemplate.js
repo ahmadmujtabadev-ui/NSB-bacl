@@ -38,7 +38,7 @@ const characterTemplateSchema = new mongoose.Schema(
     description: { type: String, default: '' },
     category: {
       type: String,
-      enum: ['girl', 'boy', 'elder-female', 'elder-male', 'animal', 'toddler', 'teen-girl', 'teen-boy'],
+      enum: ['girl', 'boy', 'elder-female', 'elder-male', 'animal', 'toddler', 'teen-girl', 'teen-boy', 'adult-male', 'adult-female'],
       required: true,
     },
     thumbnailUrl: { type: String, default: '' },
