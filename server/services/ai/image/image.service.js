@@ -4,6 +4,7 @@ import { Character } from '../../../models/Character.js';
 import { KnowledgeBase } from '../../../models/KnowledgeBase.js';
 import { NotFoundError } from '../../../errors.js';
 import { generateImage } from './image.providers.js';
+import { DEFAULT_COVER_TEMPLATES } from '../../../constants/coverTemplates.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Negative prompt
@@ -864,6 +865,12 @@ function buildCoverKbBlock(cd, project, ageMode) {
   if (!cd) return null;
   const bs = project?.bookStyle || {};
   const lines = ['COVER DESIGN — LOCKED DIRECTIVES FROM KNOWLEDGE BASE (non-negotiable):'];
+
+  // ── Selected visual template ─────────────────────────────────────────────────
+  if (cd.selectedCoverTemplate) {
+    const tpl = DEFAULT_COVER_TEMPLATES.find(t => t._id === cd.selectedCoverTemplate);
+    if (tpl?.promptDirective) lines.push(tpl.promptDirective);
+  }
 
   // ── Atmosphere / mood ────────────────────────────────────────────────────────
   const atmosphere = ageMode === 'underSix' || ageMode === 'junior'

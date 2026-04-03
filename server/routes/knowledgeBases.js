@@ -2,8 +2,20 @@ import { Router } from 'express';
 import { KnowledgeBase } from '../models/KnowledgeBase.js';
 import { Universe } from '../models/Universe.js';
 import { NotFoundError, ForbiddenError, ValidationError } from '../errors.js';
+import { DEFAULT_COVER_TEMPLATES } from '../constants/coverTemplates.js';
+import { DEFAULT_KB_TEMPLATES } from '../constants/knowledgeBaseTemplates.js';
 
 const router = Router();
+
+// ── Cover template catalogue ─────────────────────────────────────────────────
+router.get('/cover-templates', (req, res) => {
+  res.json(DEFAULT_COVER_TEMPLATES);
+});
+
+// ── KB starter template catalogue ────────────────────────────────────────────
+router.get('/kb-templates', (req, res) => {
+  res.json(DEFAULT_KB_TEMPLATES);
+});
 
 router.get('/', async (req, res, next) => {
   try {

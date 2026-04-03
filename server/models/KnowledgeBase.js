@@ -100,7 +100,7 @@ const schema = new Schema({
   coverDesign: {
     // Branding & layout
     brandingRules:        { type: [String], default: [] }, // logo placement, title zone
-    titlePlacement:       String,   // e.g. "Top 1/3, visible at thumbnail size"
+    titlePlacement:       String,   // e.g. "Top 1/3, visible at thumb/nail size"
     authorTaglinePlacement: String, // e.g. "Bottom or lower-right corner"
 
     // Character composition
@@ -121,6 +121,9 @@ const schema = new Schema({
     avoidCover:      { type: [String], default: [] },
 
     extraNotes:      String,
+
+    // Selected visual template (references DEFAULT_COVER_TEMPLATES._id)
+    selectedCoverTemplate: { type: String, default: null },
   },
 
   // ═══════════════════════════════════════════════════════════════════════════

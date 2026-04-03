@@ -14,7 +14,12 @@
       "Bash(cmd /c \"cd /d C:\\\\Users\\\\Paklogics\\\\Desktop\\\\example_code\\\\example\\\\Noorstudio && node_modules\\\\.bin\\\\tsc --noEmit --skipLibCheck 2>&1 | more\")",
       "Bash(cmd /c \"node -e \"\"const j = require\\(''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/jspdf''\\); console.log\\(Object.keys\\(j\\)\\)\"\"\")",
       "Bash(cmd /c \"node -e \"\"try{const j=require\\(''''C:/Users/Paklogics/Desktop/example_code/example/Noorstudio/node_modules/jspdf/dist/jspdf.node.js''''\\);console.log\\(''''keys:'''',Object.keys\\(j\\).slice\\(0,5\\)\\)}catch\\(e\\){console.log\\(e.message\\)}\"\"\")",
-      "Bash(node server/scripts/seed-test-data.js)"
+      "Bash(node server/scripts/seed-test-data.js)",
+      "Bash(cp \"Cozy library reading nook with plants.png\" \"loc-library.png\")",
+      "Bash(cp \"Cozy rooftop lounge under the stars.png\" \"loc-rooftop.png\")",
+      "Bash(cp \"Desert caravan at sunset.png\" \"loc-desert.png\")",
+      "Bash(cp \"Dreamy pastel sky with sunshine.png\" \"color-pastels.png\")",
+      "Bash(cp \"Dreamy sky with rainbow and clouds.png\" \"lighting-rainbow.png\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Paklogics\\Desktop\\example_code\\example\\Noorstudio\\src\\pages\\app",
