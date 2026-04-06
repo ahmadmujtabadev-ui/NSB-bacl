@@ -66,6 +66,7 @@ router.post('/generate', async (req, res, next) => {
     variantCount = 1,
     force = false,
     traceId: clientTraceId,
+    previewMode = false,
   } = req.body;
 
   const traceId =
@@ -318,6 +319,7 @@ router.post('/generate', async (req, res, next) => {
         seed,
         style,
         traceId,
+        previewMode: !!previewMode,
       });
     }
 

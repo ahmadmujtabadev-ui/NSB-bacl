@@ -207,6 +207,11 @@ export async function generateImage(req) {
       geminiResult = await geminiGenerate({ ...req, aspectRatio: '2:3' });
       break;
 
+    case 'spine':
+      console.log('[ImageProviders] → Gemini (spine)');
+      geminiResult = await geminiGenerate({ ...req, aspectRatio: '2:3' });
+      break;
+
     case 'portrait':
       console.log('[ImageProviders] → Gemini (portrait)');
       geminiResult = await geminiGenerate({ ...req, aspectRatio: '3:4' });

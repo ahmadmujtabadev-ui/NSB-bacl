@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import { connectDB } from './db.js';
 import { config } from './config.js';
 import { errorHandler } from './errors.js';
-import { authenticate } from './middleware/auth.js';
+import { authenticate, optionalAuthenticate } from './middleware/auth.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -45,7 +45,6 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);
-
 // ─── Protected Routes ────────────────────────────────────────────────────────
 app.use('/api/universes', authenticate, universesRoutes);
 app.use('/api/characters', authenticate, charactersRoutes);
@@ -56,7 +55,8 @@ app.use('/api/projects', authenticate, aiReview );   // ← page-level editing &
 app.use('/api/exports', authenticate, exportsRoutes);
 app.use('/api/payments', authenticate, paymentsRoutes);
 app.use('/api/admin', authenticate, adminRoutes);
-app.use('/api/character-templates', authenticate, characterTemplatesRoutes);
+// /defaults is public (no token needed); all other template routes require auth
+app.use('/api/character-templates', optionalAuthenticate, characterTemplatesRoutes);
 app.use('/api/ai', authenticate, aiRoutes);
 
 // ─── Error Handler ───────────────────────────────────────────────────────────

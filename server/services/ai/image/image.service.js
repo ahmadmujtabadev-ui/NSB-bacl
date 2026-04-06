@@ -57,6 +57,25 @@ const BASE_NEGATIVE_PROMPT = [
 // Basic helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+function buildKbBackgroundBlock(kb, ageMode) {
+  const bgKey = (ageMode === 'spreads-only' || ageMode === 'picture-book') ? 'junior' : 'middleGrade';
+  const kbBg = kb?.backgroundSettings?.[bgKey] || {};
+  const lines = [];
+
+  if (kbBg.locations?.length)
+    lines.push(`Approved scene locations: ${kbBg.locations.join(', ')}.`);
+  if (kbBg.keyFeatures?.length)
+    lines.push(`Required visual features in every scene: ${kbBg.keyFeatures.join('; ')}.`);
+  if (kbBg.additionalNotes)
+    lines.push(`Scene direction: ${kbBg.additionalNotes}`);
+  if (kb?.backgroundSettings?.avoidBackgrounds?.length)
+    lines.push(`NEVER use these backgrounds: ${kb.backgroundSettings.avoidBackgrounds.join(', ')}.`);
+  if (kb?.backgroundSettings?.universalRules)
+    lines.push(`Universal rule: ${kb.backgroundSettings.universalRules}`);
+
+  return lines.join('\n') || '';
+}
+
 export function normArr(val) {
   if (!val) return [];
   if (Array.isArray(val)) return [...val];
@@ -200,10 +219,7 @@ function buildProjectStyleLock(project, universeStyle, kb, ageMode) {
   const bs = project.bookStyle || {};
 
   // Pull per-age-group background rules from KB if available
-  const bgKey = ageMode === 'underSix' ? 'junior'
-    : ageMode === 'junior' ? 'junior'
-    : ageMode === 'saeeda' ? 'saeeda'
-    : 'middleGrade';
+  const bgKey = (ageMode === 'spreads-only' || ageMode === 'picture-book') ? 'junior' : 'middleGrade';
   const kbBg = kb?.backgroundSettings?.[bgKey];
 
   const lines = [
@@ -217,11 +233,11 @@ function buildProjectStyleLock(project, universeStyle, kb, ageMode) {
     `• Islamic decor style: ${bs.islamicDecorStyle || 'subtle'}`,
   ];
 
-  if (kbBg?.tone)        lines.push(`• Scene tone: ${kbBg.tone}`);
+  if (kbBg?.tone) lines.push(`• Scene tone: ${kbBg.tone}`);
   if (kbBg?.locations?.length) lines.push(`• Approved locations: ${kbBg.locations.join(', ')}`);
   if (kbBg?.keyFeatures?.length) lines.push(`• Background key features: ${kbBg.keyFeatures.join('; ')}`);
-  if (kbBg?.timeOfDay)   lines.push(`• Default time of day: ${kbBg.timeOfDay} (use this unless scene overrides)`);
-  if (kbBg?.cameraHint)  lines.push(`• Default camera hint: ${kbBg.cameraHint} (use this unless scene overrides)`);
+  if (kbBg?.timeOfDay) lines.push(`• Default time of day: ${kbBg.timeOfDay} (use this unless scene overrides)`);
+  if (kbBg?.cameraHint) lines.push(`• Default camera hint: ${kbBg.cameraHint} (use this unless scene overrides)`);
   if (kbBg?.additionalNotes) lines.push(`• Background notes: ${kbBg.additionalNotes}`);
 
   if (kb?.backgroundSettings?.avoidBackgrounds?.length)
@@ -236,87 +252,88 @@ function buildProjectStyleLock(project, universeStyle, kb, ageMode) {
 function describeCharacter(c) {
   if (!c) return '';
 
+  // IDENTITY FIX: slim character description.
+  // The portrait reference image handles face, skin, hair, and general outfit.
+  // The prompt only re-states what references cannot reliably convey:
+  // outfit COLOR (can shift under different lighting), hijab color, glasses, facial hair.
+  // Everything else (eyebrow shape, nose, cheeks, face structure) is read from the reference.
   const vd = c.visualDNA || {};
   const mod = c.modestyRules || {};
-  const outfitColor = extractOutfitColor(vd);
 
-  const gender = mod.hijabAlways
-    ? 'GIRL'
-    : (safeStr(vd.gender).toUpperCase() || 'CHILD');
+  const gender = mod.hijabAlways ? 'girl' : (safeStr(vd.gender).toLowerCase() || 'child');
+  const age = c.ageRange || 'child';
+
+  // Hair / hijab — color is safe to state; structure comes from reference
+  const hairLine = safeStr(vd.hijabStyle)
+    ? `${safeStr(vd.hijabColor) || ''} hijab always worn — never remove`.trim()
+    : safeStr(vd.hairStyle)
+      ? `${safeStr(vd.hairColor) || ''} ${safeStr(vd.hairStyle)} hair — never change`.trim()
+      : 'hair matches reference — never change';
+
+  // Facial hair — must state explicitly; model will randomise otherwise
+  const facialHairLine = safeStr(vd.facialHair)
+    ? `facial hair: ${safeStr(vd.facialHair)} — always show`
+    : 'no beard, no mustache, clean-shaven';
+
+  // Glasses — must state explicitly
+  const glassesLine = safeStr(vd.glasses)
+    ? `always wearing ${safeStr(vd.glasses)}`
+    : 'no glasses';
+
+  // Outfit — color only (reference shows the style)
+  const outfitLine = [
+    safeStr(vd.topGarmentColor) && safeStr(vd.topGarmentType)
+      ? `${safeStr(vd.topGarmentColor)} ${safeStr(vd.topGarmentType)}`
+      : '',
+    safeStr(vd.bottomGarmentColor) && safeStr(vd.bottomGarmentType)
+      ? `${safeStr(vd.bottomGarmentColor)} ${safeStr(vd.bottomGarmentType)}`
+      : '',
+  ].filter(Boolean).join(', ') || extractOutfitColor(vd);
+
+  // Height — only what reference cannot show (relative ratio)
+  const heightLine = vd.heightCm > 0
+    ? `height ${vd.heightCm}cm`
+    : safeStr(vd.heightFeel)
+      ? `height: ${safeStr(vd.heightFeel)}`
+      : '';
+
+  const modesty = [
+    mod.longSleeves ? 'long sleeves always' : '',
+    mod.looseClothing ? 'loose modest clothing' : '',
+  ].filter(Boolean).join(', ');
 
   return [
-    `• ${c.name} [${c.role || 'character'}] — ${gender}, age ${c.ageRange || 'child'}`,
-    `  Skin tone: ${safeStr(vd.skinTone) || 'N/A'}`,
-    `  Eye color: ${safeStr(vd.eyeColor) || 'N/A'}`,
-    `  Face shape: ${safeStr(vd.faceShape) || 'N/A'}`,
-    `  Eyebrow style: ${safeStr(vd.eyebrowStyle) || 'N/A'}`,
-    `  Nose style: ${safeStr(vd.noseStyle) || 'N/A'}`,
-    `  Cheek style: ${safeStr(vd.cheekStyle) || 'N/A'}`,
-    // Hair — hard lock, same language as glasses/facial hair
-    safeStr(vd.hijabStyle)
-      ? `  HIJAB LOCK — ALWAYS WEARING: ${safeStr(vd.hijabStyle)} in ${safeStr(vd.hijabColor) || 'same color'} — never remove, never change style or color`
-      : safeStr(vd.hairStyle)
-        ? `  HAIR LOCK — ALWAYS: ${safeStr(vd.hairStyle)} in ${safeStr(vd.hairColor) || 'natural color'} — NEVER change hairstyle, NEVER change hair color between images — zero variation allowed`
-        : `  HAIR: match reference image exactly — NEVER randomise hairstyle`,
-    `  Hair visibility: ${safeStr(vd.hairVisibility) || 'N/A'}`,
-    // Facial hair — explicit lock either way so AI never randomises
-    safeStr(vd.facialHair)
-      ? `  FACIAL HAIR LOCK — ALWAYS SHOW: ${safeStr(vd.facialHair)} — never remove, never change style or color`
-      : `  FACIAL HAIR: NONE — completely clean-shaven, NO beard, NO mustache, NO stubble — NEVER add any facial hair`,
-    // Glasses — explicit lock either way
-    safeStr(vd.glasses)
-      ? `  GLASSES LOCK — ALWAYS WEARING: ${safeStr(vd.glasses)} — never remove glasses from this character`
-      : `  GLASSES: NONE — this character does NOT wear glasses — NEVER add glasses or spectacles`,
-    `  Top garment: ${safeStr(vd.topGarmentType) || 'N/A'} (${safeStr(vd.topGarmentColor) || 'N/A'})`,
-    `  Top garment details: ${safeStr(vd.topGarmentDetails) || 'N/A'}`,
-    `  Bottom garment: ${safeStr(vd.bottomGarmentType) || 'N/A'} (${safeStr(vd.bottomGarmentColor) || 'N/A'})`,
-    `  Shoes: ${safeStr(vd.shoeType) || 'N/A'} (${safeStr(vd.shoeColor) || 'N/A'})`,
-    `  Outfit rules: ${safeStr(vd.outfitRules) || 'N/A'}`,
-    `  Outfit color lock: ${outfitColor}`,
-    // Body build + weight — hard lock
-    `  BODY LOCK — build: ${safeStr(vd.bodyBuild) || 'medium'}, weight category: ${safeStr(vd.weightCategory) || 'average'} — NEVER alter body weight, muscle mass, or proportions from scene to scene`,
-    // Height — explicit cm or relative feel, always locked
-    vd.heightCm > 0
-      ? `  HEIGHT LOCK — EXACTLY ${vd.heightCm}cm — this character must appear at this EXACT height relative to every other character in every scene`
-      : `  HEIGHT LOCK — feel: ${safeStr(vd.heightFeel) || 'average'} — NEVER change apparent height between images`,
-    `  Accessories: ${formatAccessories(vd)}`,
-    `  Palette notes: ${safeStr(vd.paletteNotes) || 'none'}`,
-    mod.hijabAlways ? `  Hijab: ALWAYS visible` : '',
-    mod.longSleeves ? `  Long sleeves: ALWAYS` : '',
-    mod.looseClothing ? `  Loose clothing: ALWAYS` : '',
-    `  Traits: ${(c.traits || []).join(', ') || 'none'}`,
-  ].filter(Boolean).join('\n');
+    `${c.name} — ${gender}, age ${age}`,
+    `skin: ${safeStr(vd.skinTone) || 'match reference'}`,
+    hairLine,
+    facialHairLine,
+    glassesLine,
+    outfitLine ? `outfit: ${outfitLine}` : '',
+    heightLine,
+    modesty,
+  ].filter(Boolean).join(', ');
 }
 
 function buildOutfitQuickRef(characters) {
+  // IDENTITY FIX: kept intentionally minimal — reference image conveys most of this.
+  // Only re-state outfit COLORS (safe to repeat) and the hair/hijab lock (critical for modesty).
   if (!characters?.length) return '';
 
   const lines = characters.map((c) => {
     const vd = c.visualDNA || {};
     const hairLock = safeStr(vd.hijabStyle)
-      ? `HIJAB: ${safeStr(vd.hijabStyle)} ${safeStr(vd.hijabColor) || ''} — LOCKED`
-      : `HAIR: ${safeStr(vd.hairStyle) || 'match ref'} ${safeStr(vd.hairColor) || ''} — LOCKED`;
-    return [
-      `• ${c.name}:`,
-      `  - Top: ${safeStr(vd.topGarmentType) || 'N/A'} (${safeStr(vd.topGarmentColor) || 'N/A'})`,
-      `  - Bottom: ${safeStr(vd.bottomGarmentType) || 'N/A'} (${safeStr(vd.bottomGarmentColor) || 'N/A'})`,
-      `  - Shoes: ${safeStr(vd.shoeType) || 'N/A'} (${safeStr(vd.shoeColor) || 'N/A'})`,
-      `  - ${hairLock}`,
-      `  - Body: ${safeStr(vd.weightCategory) || 'average'} build — LOCKED`,
-    ].join('\n');
+      ? `${safeStr(vd.hijabColor) || ''} hijab — always worn`.trim()
+      : `${safeStr(vd.hairColor) || ''} ${safeStr(vd.hairStyle) || 'hair'} — never change`.trim();
+
+    const outfit = [
+      safeStr(vd.topGarmentColor) ? `${safeStr(vd.topGarmentColor)} top` : '',
+      safeStr(vd.bottomGarmentColor) ? `${safeStr(vd.bottomGarmentColor)} bottom` : '',
+    ].filter(Boolean).join(', ');
+
+    return `${c.name}: ${outfit}${outfit ? ', ' : ''}${hairLock}`;
   });
 
-  return `
-OUTFIT & APPEARANCE LOCK — ABSOLUTE — SAME IN EVERY IMAGE
-${lines.join('\n')}
-Rules:
-• NEVER redesign clothing
-• NEVER change colors
-• NEVER replace garments
-• NEVER add random accessories
-• NEVER change hairstyle, hair color, or hair length
-• NEVER alter body weight, build, or proportions
-`.trim();
+  return `Appearance locks: ${lines.join(' | ')}. Never redesign clothing or hair between images.`;
 }
 
 function buildHeightHierarchy(characters) {
@@ -344,14 +361,14 @@ function buildHeightHierarchy(characters) {
 
   const relativeLines = sorted.length > 1
     ? sorted.map((c, i) => {
-        if (i === 0) return `• ${c.name} is the TALLEST character in this scene`;
-        const prev = sorted[i - 1];
-        if (c.cm > 0 && prev.cm > 0) {
-          const diff = prev.cm - c.cm;
-          return `• ${c.name} is ${diff}cm SHORTER than ${prev.name} — always visibly shorter`;
-        }
-        return `• ${c.name} is SHORTER than ${prev.name} — always visibly shorter in frame`;
-      })
+      if (i === 0) return `• ${c.name} is the TALLEST character in this scene`;
+      const prev = sorted[i - 1];
+      if (c.cm > 0 && prev.cm > 0) {
+        const diff = prev.cm - c.cm;
+        return `• ${c.name} is ${diff}cm SHORTER than ${prev.name} — always visibly shorter`;
+      }
+      return `• ${c.name} is SHORTER than ${prev.name} — always visibly shorter in frame`;
+    })
     : [];
 
   return [
@@ -364,42 +381,160 @@ function buildHeightHierarchy(characters) {
 }
 
 function buildCharacterLockBlock(characters) {
+  // IDENTITY FIX: compact block that fits within CLIP's 77-token context.
+  // The reference portrait carries face/hair/outfit structure.
+  // This block only restates colors and critical locks the model tends to randomise.
   if (!characters?.length) return '';
 
-  const approvedNames = characters.map((c) => c.name).join(', ');
-  const descriptions = characters.map(describeCharacter).join('\n\n');
-  const heightHierarchy = buildHeightHierarchy(characters);
+  const names = characters.map((c) => c.name).join(', ');
+  const descriptions = characters.map(describeCharacter).join(' | ');
+
+  // Height relationship (only if 2 characters with known heights)
+  let heightNote = '';
+  if (characters.length === 2) {
+    const [a, b] = characters;
+    const aCm = Number(a.visualDNA?.heightCm) || 0;
+    const bCm = Number(b.visualDNA?.heightCm) || 0;
+    if (aCm > 0 && bCm > 0 && aCm !== bCm) {
+      const taller = aCm > bCm ? a.name : b.name;
+      const shorter = aCm > bCm ? b.name : a.name;
+      heightNote = `${taller} is visibly taller than ${shorter}.`;
+    } else if (a.visualDNA?.heightFeel && b.visualDNA?.heightFeel) {
+      heightNote = `${a.name} height: ${a.visualDNA.heightFeel}. ${b.name} height: ${b.visualDNA.heightFeel}.`;
+    }
+  }
 
   const masterNotes = characters
     .filter((c) => c.promptConfig?.masterSystemNote)
-    .map((c) => `• ${c.name}: ${c.promptConfig.masterSystemNote.trim()}`)
-    .join('\n');
+    .map((c) => `${c.name}: ${c.promptConfig.masterSystemNote.trim()}`)
+    .join(' ');
 
-  return `
-CHARACTER IDENTITY LOCK — MUST BE FOLLOWED EXACTLY
+  return [
+    `Characters in scene: ${names}.`,
+    descriptions,
+    heightNote,
+    masterNotes,
+    'Only these characters. No extra people. No background crowd. Match reference portraits exactly — only pose and expression may change.',
+  ].filter(Boolean).join(' ');
+}
 
-Approved characters in this scene:
-${approvedNames}
+// ─────────────────────────────────────────────────────────────────────────────
+// Cover-specific helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-Character details:
-${descriptions}
-${masterNotes ? `\nCHARACTER CUSTOM RULES:\n${masterNotes}` : ''}
+/**
+ * Story-aware cover character selection.
+ *
+ * Priority order:
+ *  1. Characters named in coverDesign.characterMustInclude (always included)
+ *  2. Characters matched by characterComposition role hints (mentor, comedy, moral)
+ *  3. Characters whose name appears in the story outline / theme text
+ *  4. Remaining characters by array order (author-defined significance)
+ *
+ * Returns at most 3 characters — the visual limit for a readable cover.
+ */
+export function selectCoverCharacters(allCharacters, kb, project) {
+  if (!allCharacters?.length) return [];
 
-${heightHierarchy}
+  const cd = kb?.coverDesign || {};
+  const MAX = 3;
 
-Rules:
-• Use ONLY the approved characters needed for this scene
-• Do NOT invent extra people
-• Do NOT add background people, silhouettes, crowd, or duplicates
-• Keep exact same face, age appearance, skin tone, eye color, hair style, hair color, outfit, colors, and body proportions
-• HAIRSTYLE IS LOCKED — the same cut, length, and texture must appear in every single image
-• BODY WEIGHT AND BUILD ARE LOCKED — never make a character thinner, heavier, taller, or shorter than defined
-• HEIGHT RATIOS ARE LOCKED — the taller character must always appear taller in every frame
-• Match references exactly while only changing pose, angle, expression, and action
-• NEVER change a character's age, height, skin tone, or face shape from one image to another
-• NEVER redesign clothing or accessories between images
-• A character who appears young in one image must appear exactly the same age in every image
-`.trim();
+  // Step 1: must-include list (case-insensitive names from KB)
+  const mustIncludeNames = uniqueStrings(cd.characterMustInclude || []).map(n => n.toLowerCase());
+  const required = allCharacters.filter(c => mustIncludeNames.includes(c.name.toLowerCase()));
+  if (required.length >= MAX) return required.slice(0, MAX);
+
+  // Step 2: parse characterComposition for role hints
+  // e.g. ["Ustaz Tariq — authority figure", "Fatima — moral anchor"]
+  const compRules = uniqueStrings(cd.characterComposition || []);
+  const compositionMatched = [];
+  for (const rule of compRules) {
+    const namePart = rule.split(/[—–-]/)[0].trim().toLowerCase();
+    const match = allCharacters.find(
+      c => !mustIncludeNames.includes(c.name.toLowerCase()) &&
+           c.name.toLowerCase().includes(namePart)
+    );
+    if (match && !compositionMatched.includes(match)) compositionMatched.push(match);
+  }
+
+  // Step 3: theme / story text hint — find characters whose names appear in outline
+  const storyText = [
+    project?.artifacts?.outline?.synopsis || '',
+    project?.artifacts?.storyText || '',
+    project?.artifacts?.outline?.islamicTheme || '',
+  ].join(' ').toLowerCase();
+
+  const storyHinted = allCharacters.filter(c =>
+    !mustIncludeNames.includes(c.name.toLowerCase()) &&
+    !compositionMatched.includes(c) &&
+    storyText.includes(c.name.toLowerCase())
+  );
+
+  // Step 4: fallback — remaining characters in declaration order
+  const alreadyPicked = new Set([
+    ...required.map(c => String(c._id)),
+    ...compositionMatched.map(c => String(c._id)),
+    ...storyHinted.map(c => String(c._id)),
+  ]);
+  const fallback = allCharacters.filter(c => !alreadyPicked.has(String(c._id)));
+
+  const ordered = [...required, ...compositionMatched, ...storyHinted, ...fallback];
+  return ordered.slice(0, MAX);
+}
+
+/**
+ * Builds a strict age/child-identity lock block.
+ * Injected into cover prompts to stop templates from ageing up school-age characters.
+ */
+function buildCoverCharacterAgeLock(characters) {
+  if (!characters?.length) return '';
+
+  const locks = characters.map(c => {
+    const ageRange = safeStr(c.ageRange) || 'child';
+    const ageLow = parseInt(String(ageRange).split(/[-–to]/)[0].trim(), 10);
+    const ageLabel = !isNaN(ageLow) ? `${ageLow}-year-old` : ageRange;
+    const vd = c.visualDNA || {};
+    const heightNote = vd.heightCm > 0
+      ? `height ${vd.heightCm}cm`
+      : safeStr(vd.heightFeel) || 'child proportions';
+    return `• ${c.name}: strictly a ${ageLabel} child — child face, child body proportions, ${heightNote}. NOT a teenager, NOT an adult, NOT a hero-type. School-age and clearly childlike.`;
+  });
+
+  return `CHARACTER AGE LOCK — ABSOLUTE RULE (template style MUST NOT override this):
+${locks.join('\n')}
+The cover template controls environment, palette, atmosphere, and decorative framing only.
+It does NOT change character age, face identity, body proportions, or school uniform appearance.
+Every character must still look like a school-age child matching their character reference portrait exactly.`;
+}
+
+/**
+ * Builds dynamic cover layout zones from KB title/author placement settings.
+ * Falls back to sensible defaults if the fields are blank.
+ *
+ * previewMode=true  → render visible title + author text ON the image
+ * previewMode=false → keep zones clean; text added in post-production
+ */
+function buildCoverLayoutZones(cd, authorName, previewMode) {
+  // Resolve title placement
+  const titleZone = safeStr(cd.titlePlacement) ||
+    'Top 25% of cover — keep this zone lighter in tone so a bold title can be overlaid clearly';
+  // Resolve author/tagline placement
+  const authorZone = safeStr(cd.authorTaglinePlacement) ||
+    'Bottom 12% of cover — keep this strip slightly darker with a subtle gradient band so the author name can be overlaid in contrasting colour';
+
+  if (previewMode) {
+    return `COVER LAYOUT ZONES (PREVIEW MODE — render visible typography):
+• TITLE ZONE: ${titleZone}. RENDER the book title "${cd.bookTitle || 'Book Title'}" here in legible, styled typography matching the cover template's typographic personality. Bold, clear, professional.
+• AUTHOR ZONE: ${authorZone}. RENDER the author name "${authorName || 'Author Name'}" here in smaller complementary typography.
+• CENTER ZONE (middle 60%): Main character(s) in dynamic emotionally expressive pose, anchored lower-center. Rich layered background.
+• Character faces and key details must NOT be placed in the title or author zones.`;
+  }
+
+  return `COVER LAYOUT ZONES (ARTWORK-ONLY MODE — no text rendered):
+• TITLE ZONE: ${titleZone}. Keep this area clean, lighter in tone — title text will be added in post-production.
+• AUTHOR ZONE: ${authorZone}. Keep clean with subtle gradient — author name added in post-production.
+• CENTER ZONE (middle 60%): Main character(s) in dynamic emotionally expressive pose, anchored lower-center. Rich layered background.
+• Character faces and key details must NOT be placed in the title or author zones.`;
 }
 
 function buildScenePromptOverrides(characters = []) {
@@ -539,40 +674,48 @@ function selectBestPoseForCharacter(character, context = {}) {
   return firstApproved;
 }
 
+// Pose descriptors: text descriptions of each pose for prompt injection.
+// These replace image-based pose references, which carry identity information
+// and cause drift when used as reference images.
+const POSE_DESCRIPTORS = {
+  'standing': 'standing upright, arms relaxed at sides',
+  'sitting': 'seated comfortably, hands resting in lap',
+  'walking': 'mid-stride, one foot forward, arms in natural swing',
+  'running': 'running forward, body leaning, arms pumping',
+  'thinking': 'hand raised to chin, head slightly tilted, thoughtful expression',
+  'reading-quran': 'sitting cross-legged, hands holding an open book, eyes lowered',
+  'praying-salah': 'standing in prayer, arms folded across chest, eyes downcast',
+  'waving': 'one arm raised with open hand, warm smile',
+  'laughing': 'shoulders relaxed, head slightly back, joyful open expression',
+  'sad': 'shoulders dropped, head lowered, eyes downcast',
+  'surprised': 'eyes wide, eyebrows raised, mouth slightly open',
+  'kneeling': 'one knee on ground, body upright, hands forward',
+};
+
 function buildPoseLockBlock(selectedPoses = []) {
   if (!selectedPoses.length) return '';
 
-  return `
-POSE LOCK — MUST FOLLOW EXACTLY
-${selectedPoses.map((p) => `• ${p.characterName}: use approved pose "${p.poseKey}" (${p.label || p.poseKey})`).join('\n')}
-Rules:
-• Match body posture from approved pose reference
-• Do NOT invent random body positions
-• Only minor camera-angle adjustment is allowed
-`.trim();
+  // IDENTITY FIX: describe pose in text — do NOT reference pose images.
+  // Pose images contain the character's identity and cause blending when
+  // passed alongside the master portrait reference.
+  const lines = selectedPoses.map((p) => {
+    const key = normalizePoseKey(p.poseKey || 'standing');
+    const descriptor = POSE_DESCRIPTORS[key] || `in a natural ${key} position`;
+    return `• ${p.characterName}: ${descriptor}`;
+  });
+
+  return `Character poses:\n${lines.join('\n')}`;
 }
 
 function buildPoseRefInstruction(selectedPoses = [], characters = []) {
-  const hasPortraits = characters.some((c) => startsWithHttp(c.masterReferenceUrl || c.imageUrl));
-  const hasPoseImages = selectedPoses.some((p) => startsWithHttp(p.imageUrl));
-  const hasSheets = characters.some((c) => startsWithHttp(c.poseSheetUrl));
+  const hasPortraits = characters.some((c) => startsWithHttp(c.imageUrl));
+  if (!hasPortraits) return '';
 
-  if (!hasPortraits && !hasPoseImages && !hasSheets) return '';
-
-  const poseLines = selectedPoses
-    .filter((p) => startsWithHttp(p.imageUrl))
-    .map((p) => `• ${p.characterName}: approved pose image for "${p.poseKey}" is attached`)
-    .join('\n');
-
-  return `
-REFERENCE IMAGE RULE:
-• Use attached master portrait references as hard identity anchors
-• Use attached approved pose images as hard body-position anchors
-• Use pose sheet only as fallback support, not as primary identity source
-• Match face, body proportions, clothing, hijab/hair, and pose exactly
-
-${poseLines || ''}
-`.trim();
+  // IDENTITY FIX: only reference the portrait as the identity anchor.
+  // Pose images and sheets are NOT attached — they cause identity blending.
+  // Pose is controlled via text descriptors in buildPoseLockBlock instead.
+  const names = characters.map((c) => c.name).join(', ');
+  return `Reference images attached: master portrait(s) for ${names}. Use as hard identity anchor — match face, skin tone, hair, outfit, and proportions exactly.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -580,34 +723,12 @@ ${poseLines || ''}
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildCrossPageAnchor(label, sceneCharacters = []) {
+  // IDENTITY FIX: collapsed to a single line to conserve CLIP token budget.
+  // The detailed identity information is now carried by the reference portrait image,
+  // not by repeated verbose text that gets truncated after token 77.
   const names = sceneCharacters.map((c) => c.name).join(', ');
-  const ageLines = sceneCharacters
-    .map((c) => `• ${c.name}: age ${c.ageRange || 'child'}, ${c.visualDNA?.skinTone || ''} skin`)
-    .filter(Boolean)
-    .join('\n');
-  const heightLines = sceneCharacters
-    .filter((c) => c.visualDNA?.heightCm > 0)
-    .map((c) => `• ${c.name}: exactly ${c.visualDNA.heightCm}cm`)
-    .join('\n');
-
-  return `
-MASTER CONSISTENCY ANCHOR — ABSOLUTE RULES
-This illustration belongs to "${label}".
-Characters must look IDENTICAL to every other illustration in this book: ${names || 'scene characters'}.
-
-LOCKED — NEVER CHANGE BETWEEN ILLUSTRATIONS:
-${ageLines}
-${heightLines ? `Heights (fixed):\n${heightLines}` : ''}
-• Face structure, bone shape, features — IDENTICAL each time
-• Skin tone — IDENTICAL each time
-• Eye color, eyebrow shape — IDENTICAL each time
-• Hair color, style, length — IDENTICAL each time
-• Clothing colors and style — IDENTICAL each time
-• Body proportions and build — IDENTICAL each time
-
-ALLOWED TO CHANGE: pose, camera angle, facial expression, scene background.
-DO NOT age-up, age-down, change skin tone, or redesign any character between illustrations.
-`.trim();
+  if (!names) return '';
+  return `Illustration "${label}". Characters must look identical to all other illustrations in this book. Only pose, expression, and background may change.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -672,11 +793,14 @@ function getSceneCharacters(allCharacters, names = []) {
 }
 
 function buildSceneSelection(allCharacters, context = {}) {
-  const sceneCharacters = getSceneCharacters(
+  const matched = getSceneCharacters(
     allCharacters,
     context.names || context.charactersInScene || []
   );
 
+  const sceneCharacters = matched; // no silent slice
+
+  const referenceCharacters = matched.slice(0, 2); // only refs capped
   const selectedPoses = sceneCharacters.map((character) => {
     const pose = selectBestPoseForCharacter(character, context);
     return {
@@ -690,9 +814,8 @@ function buildSceneSelection(allCharacters, context = {}) {
     };
   });
 
-  return { sceneCharacters, selectedPoses };
+  return { sceneCharacters, referenceCharacters, selectedPoses };
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Chapter moment helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -806,6 +929,48 @@ function deriveSceneText(spread, chapterData, chapterContent) {
 // Prompt builders
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Build a contrast note for 2-character scenes to prevent identity blending.
+function buildContrastAnchor(sceneCharacters) {
+  if (sceneCharacters.length < 2) return '';
+  const [a, b] = sceneCharacters;
+  const vdA = a.visualDNA || {};
+  const vdB = b.visualDNA || {};
+  const modA = a.modestyRules || {};
+  const modB = b.modestyRules || {};
+  const contrasts = [];
+
+  if (vdA.skinTone && vdB.skinTone && vdA.skinTone !== vdB.skinTone) {
+    contrasts.push(`${a.name} has ${vdA.skinTone} skin, ${b.name} has ${vdB.skinTone} skin`);
+  }
+  if (modA.hijabAlways !== modB.hijabAlways) {
+    const withHijab = modA.hijabAlways ? a.name : b.name;
+    const without = modA.hijabAlways ? b.name : a.name;
+    contrasts.push(`only ${withHijab} wears a hijab, ${without} does not`);
+  }
+  const aCm = Number(vdA.heightCm) || 0;
+  const bCm = Number(vdB.heightCm) || 0;
+  if (aCm > 0 && bCm > 0 && aCm !== bCm) {
+    const taller = aCm > bCm ? a.name : b.name;
+    const shorter = aCm > bCm ? b.name : a.name;
+    contrasts.push(`${taller} is visibly taller than ${shorter}`);
+  }
+  return contrasts.length ? `Visual distinction: ${contrasts.join('. ')}.` : '';
+}
+
+// Infer an emotion word from a scene description hint.
+function inferEmotionFromHint(hint = '') {
+  const h = hint.toLowerCase();
+  if (/sad|cry|regret|guilt|mistake|loss/.test(h)) return 'sad';
+  if (/laugh|giggle|joy|celebrat|excit/.test(h)) return 'joyful';
+  if (/scared|fear|worried|anxious|tremble/.test(h)) return 'worried';
+  if (/surpris|amaz|discover|shock|sudden/.test(h)) return 'surprised';
+  if (/pray|dua|worship|gratitude|grateful/.test(h)) return 'peaceful and devout';
+  if (/determin|brave|resolv|courag/.test(h)) return 'determined';
+  if (/wonder|curious|interest|ponder/.test(h)) return 'curious';
+  if (/angry|frustrat|annoy/.test(h)) return 'frustrated';
+  return 'calm and engaged';
+}
+
 function buildSpreadPrompt({
   project,
   bookTitle,
@@ -821,44 +986,77 @@ function buildSpreadPrompt({
   outfitQuickRef,
   crossPageAnchor,
   sceneCharacters,
+  kb,
 }) {
   const first = String(ageRange || '').match(/\d+/)?.[0];
   const minAge = first ? Number(first) : 7;
   const isYoung = minAge <= 6;
-  const styleLock = buildProjectStyleLock(project, universeStyle);
-  const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const ageMode = getAgeMode(ageRange);
+  const bs = project.bookStyle || {};
+
+  // KB background rules for environment section
+  const bgKey = ageMode === 'spreads-only' || ageMode === 'picture-book' ? 'junior' : 'middleGrade';
+  const kbBg = kb?.backgroundSettings?.[bgKey];
+
+  // 1. Style anchor — MUST be first for maximum CLIP weight
+  const styleAnchor = [
+    universeStyle || bs.artStyle || 'Pixar 3D animation style',
+    bs.colorPalette || kbBg?.colorStyle || 'warm pastels',
+    'Islamic children\'s book illustration, professional quality',
+  ].join(', ') + '.';
+
+  // 2. Scene — what is happening
+  const scene = spreadText
+    ? `Scene: ${spreadText}${illustrationHint ? ` — ${illustrationHint}` : ''}`
+    : illustrationHint
+      ? `Scene: ${illustrationHint}`
+      : 'Scene: A warm child-friendly Islamic story moment.';
+
+  // 3. Contrast anchor — prevents identity blending between 2 characters
+  const contrastAnchor = buildContrastAnchor(sceneCharacters);
+
+  // 4. Environment — compact (tone, lighting, time, camera from KB)
+  const lighting = bs.lightingStyle || kbBg?.lightingStyle || 'warm golden';
+  const timeOfDay = kbBg?.timeOfDay || 'afternoon';
+  const envParts = [`Lighting: ${lighting}`, `Time: ${timeOfDay}`];
+  if (kbBg?.cameraHint) envParts.push(`Camera: ${kbBg.cameraHint} shot`);
+  if (kbBg?.tone) envParts.push(`Tone: ${kbBg.tone}`);
+  const environment = envParts.join('. ') + '.';
+
+  // 5. KB background directives — locations, keyFeatures, avoidBackgrounds,
+  //    additionalNotes, universalRules (previously missing from spread prompts)
+  const kbBackgroundBlock = buildKbBackgroundBlock(kb, ageMode);
+
+  // 6. Composition hint — short
+  const composition = isYoung
+    ? 'Clear warm expressive composition for young children.'
+    : 'Simple readable composition, characters in focus.';
+
+  // 7. Text safe zone
+  const safeZone = textSafeZone(textPosition);
+
+  // 8. Format — collapsed to one line
+  const format = 'Full-bleed single illustration. No text, no borders, no frames, no extra characters.';
+
+  // 9. Custom scene overrides (character-level prefix/suffix)
   const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
-  const sceneInstruction = spreadText
-    ? `SCENE TO ILLUSTRATE:
-Text to match exactly: "${spreadText}"
-${illustrationHint ? `Additional scene hint: ${illustrationHint}` : ''}`
-    : illustrationHint
-      ? `SCENE TO ILLUSTRATE: ${illustrationHint}`
-      : 'SCENE: A warm child-friendly Islamic story moment.';
-
   return [
-    `Islamic children's book illustration for "${bookTitle}".`,
-    `Page label: ${spreadLabel}.`,
-    NO_BORDER_BLOCK,
-    SINGLE_PANEL,
-    CLEAN_BACKGROUND,
-    styleLock,
-    outfitQuickRef,
-    crossPageAnchor,
-    characterLockBlock,
-    poseLockBlock,
-    poseRefBlock,
+    styleAnchor,          // style anchor FIRST — max CLIP weight
+    scene,                // what is happening
+    characterLockBlock,   // who they are (compact: name + color locks only)
+    poseLockBlock,        // what pose each character is in (text descriptor)
+    contrastAnchor,       // visual distinction between 2 chars (prevents blending)
+    outfitQuickRef,       // outfit color quick reference
+    poseRefBlock,         // reference image note (portrait anchor only)
+    crossPageAnchor,      // consistency note (1 line)
+    environment,          // setting, lighting, time, camera, tone
+    kbBackgroundBlock,    // locations, keyFeatures, avoidBackgrounds, universalRules
+    composition,
+    safeZone,
     sceneOverrides || null,
-    `Only these characters may appear: ${allowedNames || 'scene characters only'}.`,
-    sceneInstruction,
-    isYoung
-      ? 'Composition: very clear, warm, expressive, simple, easy for young children to read visually.'
-      : 'Composition: simple clear composition, focus on characters, minimal distractions, readable storytelling.',
-    textSafeZone(textPosition),
-    `Render style: ${universeStyle || 'pixar-3d'}.`,
-    'No text, no letters, no numbers, no watermark anywhere.',
-  ].filter(Boolean).join('\n\n');
+    format,
+  ].filter(Boolean).join('\n');
 }
 
 function buildCoverKbBlock(cd, project, ageMode) {
@@ -866,13 +1064,65 @@ function buildCoverKbBlock(cd, project, ageMode) {
   const bs = project?.bookStyle || {};
   const lines = ['COVER DESIGN — LOCKED DIRECTIVES FROM KNOWLEDGE BASE (non-negotiable):'];
 
-  // ── Selected visual template ─────────────────────────────────────────────────
+  // ── Selected visual template (highest priority — defines the entire visual language) ──
+  // When a template is active its promptDirective already encodes the full color palette,
+  // lighting, and atmosphere — emitting separate colorStyle/lightingEffects lines afterward
+  // creates conflicting instructions and the model splits the difference (wrong output).
+  let templateActive = false;
   if (cd.selectedCoverTemplate) {
     const tpl = DEFAULT_COVER_TEMPLATES.find(t => t._id === cd.selectedCoverTemplate);
-    if (tpl?.promptDirective) lines.push(tpl.promptDirective);
+    if (tpl) {
+      templateActive = true;
+      lines.push(`• ⚠ PRIMARY VISUAL TEMPLATE — "${tpl.name}" (FOLLOW EXACTLY — this overrides all other style defaults):`);
+      if (tpl.promptDirective) lines.push(`  ${tpl.promptDirective}`);
+      if (tpl.palette?.length)  lines.push(`• TEMPLATE COLOR PALETTE: ${tpl.palette.join(', ')} — use ONLY these hex values for the cover's color scheme.`);
+      if (tpl.composition)     lines.push(`• COMPOSITION: ${tpl.composition}`);
+      if (tpl.atmosphere)      lines.push(`• ATMOSPHERE: ${tpl.atmosphere}`);
+    }
   }
 
-  // ── Atmosphere / mood ────────────────────────────────────────────────────────
+  // ── Main visual concept (scene) ───────────────────────────────────────────────
+  if (cd.mainVisualConcept) {
+    lines.push(`• MAIN VISUAL CONCEPT (primary scene to illustrate): ${cd.mainVisualConcept}`);
+  }
+
+  // ── Character description ─────────────────────────────────────────────────────
+  if (cd.characterDescription) {
+    lines.push(`• COVER CHARACTER: ${cd.characterDescription}`);
+  }
+
+  // ── Mood / theme ──────────────────────────────────────────────────────────────
+  if (cd.moodTheme) {
+    lines.push(`• MOOD & THEME (locked): ${cd.moodTheme}`);
+  }
+
+  // ── Color style — only emit when NO template is driving the palette ────────────
+  // (template's promptDirective already contains its full color spec)
+  if (!templateActive) {
+    if (cd.colorStyle) {
+      lines.push(`• COLOR PALETTE (locked — every pixel must use this): ${cd.colorStyle}. Sky, ground, clothing, architecture — ALL must reflect this palette. Do NOT use any other color scheme.`);
+    } else if (bs.colorPalette) {
+      lines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette}. Every element must use this palette.`);
+    }
+  }
+
+  // ── Lighting effects — only emit when NO template is active ───────────────────
+  if (!templateActive) {
+    if (cd.lightingEffects) {
+      lines.push(`• LIGHTING (locked — apply globally): ${cd.lightingEffects}. The entire scene must be lit this way.`);
+    } else if (bs.lightingStyle) {
+      lines.push(`• LIGHTING LOCK: ${bs.lightingStyle}. Apply consistently.`);
+    }
+  }
+
+  // ── Layering ──────────────────────────────────────────────────────────────────
+  const layers = [];
+  if (cd.foregroundLayer) layers.push(`Foreground: ${cd.foregroundLayer}`);
+  if (cd.midgroundLayer) layers.push(`Midground: ${cd.midgroundLayer}`);
+  if (cd.backgroundLayer) layers.push(`Background: ${cd.backgroundLayer}`);
+  if (layers.length) lines.push(`• SCENE LAYERS — ${layers.join(' | ')}`);
+
+  // ── Atmosphere / mood per series ──────────────────────────────────────────────
   const atmosphere = ageMode === 'underSix' || ageMode === 'junior'
     ? (cd.atmosphere?.junior || '')
     : ageMode === 'saeeda'
@@ -880,58 +1130,79 @@ function buildCoverKbBlock(cd, project, ageMode) {
       : (cd.atmosphere?.middleGrade || '');
   if (atmosphere) lines.push(`• ATMOSPHERE LOCK: ${atmosphere}`);
 
-  // ── Typography style directives (font names drive visual tone even for AI) ──
-  const typography = ageMode === 'underSix' || ageMode === 'junior'
+  // ── Typography (drives title zone visual tone) ────────────────────────────────
+  const typographyOverride = cd.typographyTitle || cd.typographyBody
+    ? [cd.typographyTitle, cd.typographyBody].filter(Boolean).join(' / ')
+    : null;
+  const typographyPerSeries = ageMode === 'underSix' || ageMode === 'junior'
     ? (cd.typography?.junior || '')
     : ageMode === 'saeeda'
       ? (cd.typography?.saeeda || '')
       : (cd.typography?.middleGrade || '');
+  const typography = typographyOverride || typographyPerSeries;
   if (typography) {
-    lines.push(`• TYPOGRAPHY & TITLE ZONE STYLE: ${typography}. The top zone background must visually match this typographic personality — e.g. if fonts are playful rounded (Fredoka, Baloo), the top zone must be bright, bubbly, cheerful; if serif adventurous, the zone must feel dramatic and cinematic.`);
+    lines.push(`• TYPOGRAPHY & TITLE ZONE VISUAL FEEL (locked): ${typography}. The top 25% of the cover background MUST visually match this typographic personality — calligraphic serif = elegant textured top zone; rounded fun = bright bubbly top zone. This is the visual tone of the entire title area.`);
   }
 
-  // ── Color palette ────────────────────────────────────────────────────────────
-  if (bs.colorPalette) lines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette}. Every element — sky, ground, clothing, environment — must use this palette.`);
-
-  // ── Lighting ────────────────────────────────────────────────────────────────
-  if (bs.lightingStyle) lines.push(`• LIGHTING LOCK: ${bs.lightingStyle}. Apply this lighting consistently.`);
-
-  // ── Islamic motifs ──────────────────────────────────────────────────────────
-  if (cd.islamicMotifs?.length) {
-    lines.push(`• ISLAMIC MOTIFS — REQUIRED (woven naturally into the scene, not as decorative borders): ${cd.islamicMotifs.join(', ')}.`);
-  }
-
-  // ── Character composition ────────────────────────────────────────────────────
-  if (cd.characterComposition?.length) {
-    lines.push(`• CHARACTER COMPOSITION LAW: ${cd.characterComposition.join('. ')}.`);
-  }
-
-  // ── Branding rules ──────────────────────────────────────────────────────────
-  if (cd.brandingRules?.length) {
-    lines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
-  }
-
-  // ── Title placement override ─────────────────────────────────────────────────
+  // ── Title placement ───────────────────────────────────────────────────────────
   if (cd.titlePlacement) {
     lines.push(`• TITLE PLACEMENT ZONE: ${cd.titlePlacement}`);
   }
 
-  // ── Optional addons ──────────────────────────────────────────────────────────
+  // ── Islamic motifs ────────────────────────────────────────────────────────────
+  if (cd.islamicMotifs?.length) {
+    lines.push(`• ISLAMIC MOTIFS — REQUIRED (woven naturally into scene, not decorative borders): ${cd.islamicMotifs.join(', ')}.`);
+  }
+
+  // ── Character composition ─────────────────────────────────────────────────────
+  if (cd.characterComposition?.length) {
+    lines.push(`• CHARACTER COMPOSITION LAW: ${cd.characterComposition.join('. ')}.`);
+  }
+
+  // ── Branding rules ────────────────────────────────────────────────────────────
+  if (cd.brandingRules?.length) {
+    lines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
+  }
+
+  // ── Optional addons ───────────────────────────────────────────────────────────
   if (cd.optionalAddons?.length) {
     lines.push(`• ATMOSPHERIC ADDONS: ${cd.optionalAddons.join(', ')}.`);
   }
 
-  // ── Avoid list ───────────────────────────────────────────────────────────────
+  // ── Avoid list ────────────────────────────────────────────────────────────────
   if (cd.avoidCover?.length) {
     lines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
   }
 
-  // ── Extra notes ──────────────────────────────────────────────────────────────
+  // ── Spine template (for full wrap-cover generation) ──────────────────────────
+  if (cd.spinePromptDirective) {
+    lines.push(`• SPINE VISUAL TEMPLATE: ${cd.spinePromptDirective}`);
+  } else if (cd.spineColorBackground || cd.spineTypographyStyle) {
+    const spineParts = [];
+    if (cd.spineColorBackground) spineParts.push(`Background: ${cd.spineColorBackground}`);
+    if (cd.spineTypographyStyle) spineParts.push(`Typography: ${cd.spineTypographyStyle}`);
+    lines.push(`• SPINE STYLE: ${spineParts.join(' | ')}`);
+  }
+
+  // ── Extra notes ───────────────────────────────────────────────────────────────
   if (cd.extraNotes) lines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
 
   return lines.length > 1 ? lines.join('\n') : null;
 }
 
+/**
+ * Builds the front-cover prompt.
+ *
+ * previewMode = true  → request rendered title + author typography on the image
+ * previewMode = false → artwork-only; no text; clean zones for post-production overlay
+ *
+ * Key design rules:
+ *  • KB block is first — image models weight early tokens most heavily
+ *  • Template controls environment/palette/atmosphere ONLY
+ *  • Template NEVER overrides character age, face, or school identity
+ *  • Layout zones are fully driven by cd.titlePlacement / cd.authorTaglinePlacement
+ *  • Default art-style lock (Pixar 3D) is suppressed when a KB template is active
+ */
 function buildCoverPrompt({
   project,
   bookTitle,
@@ -942,56 +1213,114 @@ function buildCoverPrompt({
   sceneCharacters,
   kb,
   ageMode,
+  previewMode = false,
 }) {
-  const styleLock = buildProjectStyleLock(project, universeStyle, kb, ageMode);
-  const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
   const cd = kb?.coverDesign || {};
-  const bs = project?.bookStyle || {};
 
+  // Effective title + author (KB fields override project)
+  const effectiveTitle = safeStr(cd.bookTitle) || safeStr(bookTitle) || 'Islamic Children\'s Book';
+  const authorName = safeStr(cd.authorName);
+
+  // Atmosphere per age group
   const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.atmosphere?.junior || 'Bright, warm, joyful colors; cheerful sky; safe and exciting feeling')
+    ? (safeStr(cd.atmosphere?.junior) || 'Bright, warm, joyful colours; cheerful sky; safe and exciting feeling')
     : ageMode === 'saeeda'
-      ? (cd.atmosphere?.saeeda || 'Dreamlike, magical atmosphere; soft glowing light; elegant wonder-filled scenery')
-      : (cd.atmosphere?.middleGrade || 'Cinematic sunset or golden-hour lighting; rich depth; sense of adventure and discovery');
+      ? (safeStr(cd.atmosphere?.saeeda) || 'Dreamlike, magical atmosphere; soft glowing light; elegant wonder-filled scenery')
+      : (safeStr(cd.atmosphere?.middleGrade) || 'Cinematic sunset or golden-hour lighting; rich depth; sense of adventure and discovery');
 
-  const typographyZone = cd.titlePlacement
-    ? cd.titlePlacement
-    : 'Top 25% of cover — keep this zone lighter in tone (sky, gradient, or soft background) so a bold title can be overlaid clearly';
-
-  const authorZone = 'Bottom 12% of cover — keep this strip slightly darker or with a subtle gradient band so the author name can be overlaid in contrasting color';
-
+  // ── KB directives block (highest-priority — goes first in prompt) ──────────
   const kbBlock = buildCoverKbBlock(cd, project, ageMode);
 
+  // ── Template override note ──────────────────────────────────────────────────
+  // Makes explicit that the template controls ONLY environment/palette/framing.
+  const templateScopeNote = cd.selectedCoverTemplate
+    ? [
+        '⚠ COVER TEMPLATE SCOPE:',
+        '  • The selected template above controls: color palette, lighting, atmosphere, environment, decorative motifs, architectural framing.',
+        '  • The template does NOT change: character age, face identity, body proportions, school uniform, child appearance.',
+        '  • Every character must look EXACTLY like their reference portrait — same age, same face, same school-age child appearance.',
+      ].join('\n')
+    : null;
+
+  // ── Style lock — suppressed when a KB template is driving the visual language ──
+  // Injecting "Pixar 3D" alongside "Islamic Heritage painterly" creates contradictory output.
+  const conditionalStyleLock = cd.selectedCoverTemplate
+    ? null
+    : buildProjectStyleLock(project, universeStyle, kb, ageMode);
+
+  // ── Dynamic layout zones from KB settings ──────────────────────────────────
+  const layoutZones = buildCoverLayoutZones(cd, authorName, previewMode);
+
+  // ── Character age lock (injected late in prompt — acts as final constraint) ──
+  const ageLock = buildCoverCharacterAgeLock(sceneCharacters);
+
+  // ── Allowed names ──────────────────────────────────────────────────────────
+  const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+
+  // ── Default character composition when KB hasn't specified one ──────────────
+  const defaultComposition = !cd.characterComposition?.length
+    ? `Character composition: Main character(s) positioned center-to-lower-center as the dominant focal point. Dynamic pose — NOT a static front-facing stance. One character slightly in front of the other for depth. Expression warm and engaging, as if inviting the reader into the story.`
+    : null;
+
+  // ── Default Islamic motifs when KB hasn't specified any ─────────────────────
+  const defaultIslamicMotifs = !cd.islamicMotifs?.length
+    ? `Islamic design elements: Subtle mosque silhouette or geometric pattern in the distant background. Islamic architectural details in the environment. Natural and organic — not decorative borders.`
+    : null;
+
+  // ── Default background depth when KB layers aren't specified ─────────────────
+  const defaultBackground = !cd.foregroundLayer && !cd.midgroundLayer && !cd.backgroundLayer
+    ? `Background depth: Three distinct layers — foreground detail, mid-ground character scene, richly painted distant background (architecture, nature, or landscape relevant to the story). NO flat or plain backgrounds.`
+    : null;
+
+  // ── Final quality rules — text rendering rules depend on mode ─────────────
+  const finalRules = previewMode
+    ? `FINAL QUALITY RULES:
+• Full-bleed portrait illustration, no white margins
+• Rich colour depth, professional rendering quality
+• Emotionally resonant — the cover must make a reader WANT to open this book
+• Rendered title and author typography must be clearly legible, professionally styled
+• No watermarks, no speech bubbles
+• No borders, no frames, no vignette edges`
+    : `FINAL QUALITY RULES:
+• Full-bleed portrait illustration, no white margins
+• Rich colour depth, professional rendering quality
+• Emotionally resonant — the cover must make a reader WANT to open this book
+• NO rendered title text — typography added in post-production
+• NO author name text — added in post-production
+• No watermarks, no speech bubbles, no captions
+• No borders, no frames, no vignette edges`;
+
   return [
-    `PROFESSIONAL PUBLISHED BOOK FRONT COVER — Islamic children\'s book titled "${bookTitle}".`,
+    // 1. KB directives FIRST — heaviest weight for image models
+    kbBlock,
+    // 2. Template scope clarification — what the template controls vs what it cannot touch
+    templateScopeNote,
+    // 3. Cover identity
+    `PROFESSIONAL PUBLISHED BOOK FRONT COVER — Islamic children\'s book: "${effectiveTitle}".`,
+    authorName ? `Author: ${authorName}` : null,
+    cd.subtitle ? `Subtitle / Tagline: "${cd.subtitle}"` : null,
     `Design standard: Match the production quality of bestselling published Islamic children\'s books (Kube Publishing, Prolance, Day of Difference level). Cinematic, emotionally rich, print-ready.`,
+    // 4. Format constraints
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
-    kbBlock,
-    `COVER LAYOUT ZONES — CRITICAL:
-• TOP ZONE (top 25%): ${typographyZone}. Leave this area clean and bright — the book title text will be overlaid here in post-production.
-• CENTER ZONE (middle 60%): Main character(s) featured in a dynamic, emotionally expressive pose. Character anchored in lower-center, looking active and alive. Rich layered background behind.
-• BOTTOM ZONE (bottom 12%): ${authorZone}. The author name will be overlaid here.
-• Do NOT place character faces or important detail in the very top or very bottom zones.`,
-    styleLock,
+    // 5. Dynamic layout zones (preview vs artwork-only)
+    layoutZones,
+    // 6. Project style lock (only when no template overrides it)
+    conditionalStyleLock,
+    // 7. Outfit + character identity
     outfitQuickRef,
     characterLockBlock,
     poseRefBlock,
-    `Only these characters may appear: ${allowedNames || 'main characters only'}.`,
-    !cd.characterComposition?.length
-      ? `Character composition: Main character(s) positioned center-to-lower-center as the dominant focal point. Dynamic pose — NOT a static front-facing stance. One character slightly in front of the other for depth. Expression warm and engaging, as if inviting the reader into the story.`
-      : null,
+    `Only these characters may appear on the cover: ${allowedNames || 'main characters only'}.`,
+    defaultComposition,
+    // 8. Atmosphere, background, motifs
     `Visual atmosphere: ${atmosphereNote}.`,
-    `Background depth: Three distinct layers — foreground detail, mid-ground character scene, richly painted distant background (architecture, nature, or landscape relevant to the story). NO flat or plain backgrounds.`,
-    !cd.islamicMotifs?.length
-      ? `Islamic design elements: Subtle mosque silhouette or geometric pattern in the distant background. Islamic architectural details in the environment. Natural and organic — not decorative borders.`
-      : null,
-    `FINAL QUALITY RULES:
-• Full-bleed portrait illustration, no white margins
-• Rich color depth, professional rendering quality
-• Emotionally resonant — the cover must make a reader WANT to open this book
-• No rendered title text, no author name text, no watermark, no speech bubbles — typography is added in post-production
-• No borders, no frames, no vignette edges`,
+    defaultBackground,
+    defaultIslamicMotifs,
+    // 9. Age lock — injected last so it acts as a hard final override
+    ageLock,
+    // 10. Output rules
+    finalRules,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -1003,6 +1332,7 @@ function buildBackCoverPrompt({
   ageMode,
 }) {
   const cd = kb?.coverDesign || {};
+  const effectiveTitle = cd.bookTitle || bookTitle;
   const bs = project?.bookStyle || {};
 
   const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
@@ -1015,19 +1345,34 @@ function buildBackCoverPrompt({
     ? `Match the exact same illustration style as the front cover: ${bs.artStyle}.`
     : 'Match the exact same illustration style as the front cover.';
 
-  // Build back-cover KB directives (subset — no character composition, no title placement)
+  // Build back-cover KB directives
   const backKbLines = ['BACK COVER DESIGN — LOCKED DIRECTIVES (non-negotiable):'];
+
+  // ── Back cover template (highest priority — overrides generic rules below) ──
+  if (cd.backPromptDirective) {
+    backKbLines.push(`• BACK COVER VISUAL TEMPLATE (primary directive): ${cd.backPromptDirective}`);
+  }
+  if (cd.backBackgroundStyle) {
+    backKbLines.push(`• BACK COVER BACKGROUND STYLE: ${cd.backBackgroundStyle}`);
+  }
+
   if (atmosphereNote) backKbLines.push(`• ATMOSPHERE LOCK: ${atmosphereNote}`);
-  if (bs.colorPalette)  backKbLines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette} — must match front cover exactly.`);
-  if (bs.lightingStyle) backKbLines.push(`• LIGHTING LOCK: ${bs.lightingStyle} — continuation of front cover lighting.`);
+  if (cd.colorStyle) backKbLines.push(`• COLOR STYLE: ${cd.colorStyle} — must match front cover exactly.`);
+  else if (bs.colorPalette) backKbLines.push(`• COLOR PALETTE LOCK: ${bs.colorPalette} — must match front cover exactly.`);
+  if (cd.lightingEffects) backKbLines.push(`• LIGHTING: ${cd.lightingEffects} — continuation of front cover lighting.`);
+  else if (bs.lightingStyle) backKbLines.push(`• LIGHTING LOCK: ${bs.lightingStyle} — continuation of front cover lighting.`);
+  if (cd.backgroundLayer) backKbLines.push(`• BACKGROUND ENVIRONMENT: ${cd.backgroundLayer}`);
   if (cd.islamicMotifs?.length) backKbLines.push(`• ISLAMIC MOTIFS (background/decorative only): ${cd.islamicMotifs.join(', ')}.`);
-  if (cd.brandingRules?.length)  backKbLines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
-  if (cd.avoidCover?.length)     backKbLines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
-  if (cd.extraNotes)             backKbLines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
+  if (cd.brandingRules?.length) backKbLines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
+  if (cd.avoidCover?.length) backKbLines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
+  if (cd.publisherName) backKbLines.push(`• PUBLISHER: ${cd.publisherName} — reserve bottom-left zone for publisher details.`);
+  if (cd.isbn) backKbLines.push(`• ISBN: ${cd.isbn} — reserve bottom-right corner for barcode zone.`);
+  if (cd.blurb) backKbLines.push(`• BLURB TEXT ZONE: The center 60% must stay clean and light enough for this synopsis text overlay: "${cd.blurb.substring(0, 120)}..."`);
+  if (cd.extraNotes) backKbLines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
   const backKbBlock = backKbLines.length > 1 ? backKbLines.join('\n') : null;
 
   return [
-    `PROFESSIONAL PUBLISHED BOOK BACK COVER — Islamic children\'s book "${bookTitle}".`,
+    `PROFESSIONAL PUBLISHED BOOK BACK COVER — Islamic children\'s book "${effectiveTitle}".`,
     `Design standard: Clean, editorial back cover matching premium Islamic children\'s book publishers. NO characters, NO people, NO figures of any kind.`,
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
@@ -1053,6 +1398,109 @@ function buildBackCoverPrompt({
   ].filter(Boolean).join('\n\n');
 }
 
+/**
+ * Builds the spine prompt.
+ *
+ * A book spine is a narrow vertical strip (~0.5–1 inch wide, full book height).
+ * It carries the title, author name, and optionally a publisher logo zone.
+ * No characters — pure typographic + decorative design.
+ *
+ * previewMode=true  → render visible title + author text on the image
+ * previewMode=false → clean artwork-only; text added in post-production
+ */
+function buildSpinePrompt({ project, bookTitle, authorName, kb, ageMode, previewMode = false }) {
+  const cd = kb?.coverDesign || {};
+  const bs = project?.bookStyle || {};
+
+  const effectiveTitle = safeStr(cd.bookTitle) || safeStr(bookTitle) || 'Book Title';
+  const effectiveAuthor = safeStr(cd.authorName) || safeStr(authorName) || '';
+
+  const colorScheme = safeStr(cd.spineColorBackground) || safeStr(cd.colorStyle) || safeStr(bs.colorPalette) || 'matching front cover palette';
+  const lightingStyle = safeStr(cd.lightingEffects) || safeStr(bs.lightingStyle) || 'warm consistent lighting';
+
+  // ── Spine KB directives (highest priority) ──────────────────────────────────
+  const spineKbLines = ['SPINE DESIGN — LOCKED DIRECTIVES FROM KNOWLEDGE BASE:'];
+
+  if (cd.spinePromptDirective) {
+    spineKbLines.push(`• PRIMARY SPINE TEMPLATE (FOLLOW EXACTLY): ${cd.spinePromptDirective}`);
+  }
+  if (cd.spineColorBackground) {
+    spineKbLines.push(`• SPINE BACKGROUND COLOR (locked — apply to entire spine): ${cd.spineColorBackground}`);
+  } else if (cd.colorStyle) {
+    spineKbLines.push(`• SPINE BACKGROUND COLOR: Derived from front cover — ${cd.colorStyle}. Must coordinate exactly.`);
+  }
+  if (cd.spineTypographyStyle) {
+    spineKbLines.push(`• SPINE TYPOGRAPHY STYLE (locked): ${cd.spineTypographyStyle}`);
+  }
+  if (cd.islamicMotifs?.length) {
+    spineKbLines.push(`• ISLAMIC MOTIFS (very subtle accent only — crescent, star, or geometric dot at spine endpoints): ${cd.islamicMotifs.slice(0, 2).join(', ')}.`);
+  }
+  if (cd.avoidCover?.length) {
+    spineKbLines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
+  }
+  const spineKbBlock = spineKbLines.length > 1 ? spineKbLines.join('\n') : null;
+
+  // ── Atmosphere per age group ─────────────────────────────────────────────────
+  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
+    ? (safeStr(cd.atmosphere?.junior) || 'Warm, bright, cheerful tones matching front cover')
+    : ageMode === 'saeeda'
+      ? (safeStr(cd.atmosphere?.saeeda) || 'Soft elegant tones matching front cover')
+      : (safeStr(cd.atmosphere?.middleGrade) || 'Rich warm tones matching front cover palette');
+
+  // ── Typography block ─────────────────────────────────────────────────────────
+  const typographyNote = safeStr(cd.spineTypographyStyle) ||
+    (ageMode === 'junior' || ageMode === 'underSix'
+      ? (safeStr(cd.typography?.junior) || 'Bold rounded, clear and readable')
+      : (safeStr(cd.typography?.middleGrade) || 'Elegant serif, clearly legible'));
+
+  // ── Text zones: preview vs artwork-only ──────────────────────────────────────
+  const textSection = previewMode
+    ? `SPINE TEXT (PREVIEW MODE — render visible typography):
+• TITLE: Render "${effectiveTitle}" reading from top to bottom (rotated 90° clockwise). Bold, styled typography matching "${typographyNote}". Clear, professional, high legibility.
+• AUTHOR: Render "${effectiveAuthor || 'Author Name'}" in smaller complementary typography, positioned near the bottom of the spine.
+• PUBLISHER ZONE: Reserve the very bottom 8% of the spine for a small publisher logo — keep clean.
+• Text color must contrast clearly against the spine background.`
+    : `SPINE TEXT ZONES (ARTWORK-ONLY — no text rendered):
+• TITLE ZONE (top 10% to bottom 20%): Keep this vertical band clean — book title will be overlaid in post-production.
+• AUTHOR ZONE (bottom 20%): Clean strip — author name added in post-production.
+• PUBLISHER ZONE (very bottom 8%): Reserve clean space for publisher logo.
+• Background must be clean enough for text overlay in contrasting color.`;
+
+  return [
+    // 1. KB directives FIRST
+    spineKbBlock,
+    // 2. Identity
+    `PROFESSIONAL PUBLISHED BOOK SPINE — Islamic children's book "${effectiveTitle}"${effectiveAuthor ? ` by ${effectiveAuthor}` : ''}.`,
+    `Design standard: Match the spine quality of premium Islamic children's publishers (Kube Publishing, Prolance, Day of Difference level).`,
+    // 3. Format — spine specific
+    `SPINE FORMAT REQUIREMENTS:
+• NARROW VERTICAL FORMAT — this is the book spine (narrow strip, full book height)
+• Background: Solid color or simple gradient — EXACTLY matching front cover palette: ${colorScheme}
+• NO characters, NO people, NO figures, NO portraits — purely typographic and minimally decorative
+• NO complex illustrations — a spine is a typographic design element, not an illustration panel
+• Very subtle Islamic geometric texture may be used as background (optional, must be barely visible)
+• NO borders, NO frames, NO heavy patterns that compete with the text zone
+• Full-bleed — no white margins`,
+    // 4. Text placement instructions
+    textSection,
+    // 5. Style rules
+    `DESIGN RULES:
+• Background color: ${colorScheme} — solid or 2-stop gradient, simple and clean
+• Lighting: ${lightingStyle} — consistent with front and back covers
+• Atmosphere: ${atmosphereNote}
+• Typography personality: ${typographyNote}
+• Accent motifs: Only at the very top or bottom of the spine — a single small crescent, star, or geometric shape. Nothing in the middle zone.
+• The spine must look like it belongs with the front cover — same color family, same mood, same quality.`,
+    // 6. Final quality
+    `FINAL QUALITY RULES:
+• Full-bleed portrait illustration, no white margins
+• Professional print-ready quality at 300 DPI
+• Background clean enough for high-contrast text overlay
+• NO rendered text (unless previewMode was requested above)
+• NO watermarks, NO borders, NO frames`,
+  ].filter(Boolean).join('\n\n');
+}
+
 function buildChapterBookIllustrationPrompt({
   project,
   bookTitle,
@@ -1066,42 +1514,59 @@ function buildChapterBookIllustrationPrompt({
   outfitQuickRef,
   crossPageAnchor,
   sceneCharacters,
+  kb,
 }) {
-  const styleLock = buildProjectStyleLock(project, universeStyle);
-  const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const bs = project.bookStyle || {};
+  const kbBg = kb?.backgroundSettings?.middleGrade;
   const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
+  // 1. Style anchor — FIRST for maximum CLIP weight
+  const styleAnchor = [
+    universeStyle || bs.artStyle || 'Pixar 3D animation style',
+    bs.colorPalette || kbBg?.colorStyle || 'warm pastels',
+    'Islamic children\'s chapter book illustration, professional quality',
+  ].join(', ') + '.';
+
+  // 2. Scene — what is happening
+  const scene = `Scene: ${moment.illustrationHint || moment.momentTitle}`;
+
+  // 3. Environment — compact (scene-level values take priority; KB fills gaps)
+  const lighting = bs.lightingStyle || kbBg?.lightingStyle || 'warm golden';
+  const timeOfDay = moment.timeOfDay || kbBg?.timeOfDay || 'afternoon';
+  const cameraHint = moment.cameraHint || kbBg?.cameraHint || 'medium';
+  const envParts = [
+    `Setting: ${moment.sceneEnvironment || 'mixed'} environment`,
+    `Time: ${timeOfDay}`,
+    `Lighting: ${lighting}`,
+    `Camera: ${cameraHint} shot`,
+  ];
+  if (kbBg?.tone) envParts.push(`Tone: ${kbBg.tone}`);
+  const environment = envParts.join('. ') + '.';
+
+  // 4. KB background directives — locations, keyFeatures, avoidBackgrounds,
+  //    additionalNotes, universalRules (previously missing from chapter prompts)
+  const kbBackgroundBlock = buildKbBackgroundBlock(kb, 'chapter-book');
+
+  // 5. Contrast anchor — prevents identity blending between 2 characters
+  const contrastAnchor = buildContrastAnchor(sceneCharacters);
+
+  // 6. Format — one line
+  const format = 'Full-bleed single illustration. No text, no borders, no frames, no extra characters.';
+
   return [
-    `Islamic middle-grade chapter book illustration for "${bookTitle}".`,
-    `Chapter ${chapterNumber}: "${chapterTitle}".`,
-    `Illustration moment: ${moment.momentTitle}.`,
-    NO_BORDER_BLOCK,
-    SINGLE_PANEL,
-    CLEAN_BACKGROUND,
-    styleLock,
-    outfitQuickRef,
-    crossPageAnchor,
-    characterLockBlock,
-    poseLockBlock,
-    poseRefBlock,
+    styleAnchor,          // style anchor FIRST — max CLIP weight
+    scene,                // what is happening
+    characterLockBlock,   // who they are (compact: name + color locks)
+    poseLockBlock,        // pose descriptor per character
+    contrastAnchor,       // visual distinction between 2 chars
+    outfitQuickRef,       // outfit color quick reference
+    poseRefBlock,         // portrait reference note
+    crossPageAnchor,      // consistency note (1 line)
+    environment,          // setting, lighting, time, camera, tone
+    kbBackgroundBlock,    // locations, keyFeatures, avoidBackgrounds, universalRules
     sceneOverrides || null,
-    `Only these characters may appear: ${allowedNames || 'scene characters only'}.`,
-    `
-SCENE TO ILLUSTRATE:
-${moment.illustrationHint}
-
-Scene environment: ${moment.sceneEnvironment || 'mixed'}
-Time of day: ${moment.timeOfDay || 'day'}
-
-Visual goal:
-• emotionally clear
-• simple readable composition
-• strong character focus
-• minimal distractions
-• rich but controlled atmosphere
-`.trim(),
-    'No text, no letters, no numbers, no watermark.',
-  ].filter(Boolean).join('\n\n');
+    format,
+  ].filter(Boolean).join('\n');
 }
 
 function buildCharacterStylePrompt({
@@ -1204,33 +1669,23 @@ function getPoseSheetRefs(characters = []) {
 }
 
 function buildInitialRefs(characters) {
+  // IDENTITY FIX: portraits only — no pose sheets (multi-character sheets contaminate identity)
   const refs = [];
-
   for (const c of characters) {
     refs.push(...getPortraitRefs(c));
   }
-
-  for (const c of characters) {
-    if (startsWithHttp(c.poseSheetUrl)) refs.push(c.poseSheetUrl);
-  }
-
   return uniqueStrings(refs);
 }
 
-function buildReferences(sceneCharacters, selectedPoses = []) {
+function buildReferences(sceneCharacters, _selectedPoses = []) {
+  // IDENTITY FIX: one portrait per character only.
+  // Pose images and pose sheets are NEVER passed as references — they carry
+  // identity information from a secondary (potentially inconsistent) source,
+  // which causes the model to blend identities and drift from the master portrait.
   const refs = [];
-
   for (const c of sceneCharacters) {
     refs.push(...getPortraitRefs(c));
   }
-
-  refs.push(...getPoseRefs(selectedPoses));
-
-  // pose sheet only as fallback support
-  for (const c of sceneCharacters) {
-    if (startsWithHttp(c.poseSheetUrl)) refs.push(c.poseSheetUrl);
-  }
-
   return uniqueStrings(refs);
 }
 
@@ -1238,12 +1693,11 @@ function buildReferences(sceneCharacters, selectedPoses = []) {
 // Provider wrapper
 // ─────────────────────────────────────────────────────────────────────────────
 
-function generateImageSafe(project, params) {
+function generateImageSafe(project, params, kb) {
   const extraNeg = safeStr(project?.bookStyle?.negativePrompt);
-  const negative_prompt = extraNeg
-    ? `${BASE_NEGATIVE_PROMPT}, ${extraNeg}`
-    : BASE_NEGATIVE_PROMPT;
-
+  const kbAvoid = (kb?.avoidTopics || []).join(', ');
+  const negative_prompt = [BASE_NEGATIVE_PROMPT, extraNeg, kbAvoid]
+    .filter(Boolean).join(', ');
   return generateImage({
     ...params,
     negative_prompt,
@@ -1290,15 +1744,16 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       if (!force && existingSpreadIlls[si]?.imageUrl) continue;
 
       const spread = allSpreads[si] || {};
-      const { sceneCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
+      const { sceneCharacters, referenceCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
         spread,
         names: spread.charactersInScene || [],
       });
 
-      const refs = uniqueStrings([
-        ...buildReferences(sceneCharacters, selectedPoses),
-        ...stableIdentityRefs,
-      ]);
+      // const refs = uniqueStrings([
+      //   ...buildReferences(sceneCharacters, selectedPoses),
+      //   ...stableIdentityRefs,
+      // ]);
+      const refs = buildReferences(referenceCharacters, selectedPoses);
 
       const spreadLabel = `Spread ${si + 1} of ${totalSpreads}`;
       const spreadText = deriveSceneText(spread, {}, {});
@@ -1323,6 +1778,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         outfitQuickRef,
         crossPageAnchor,
         sceneCharacters,
+        kb,
       });
 
       const result = await generateImageSafe(project, {
@@ -1459,16 +1915,13 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       for (let si = existing.spreads.length; si < targetSpreads.length; si++) {
         const spread = targetSpreads[si] || {};
 
-        const { sceneCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
+        const { sceneCharacters, referenceCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
           spread,
           chapterData,
           names: spread.charactersInScene || chapterData.charactersInScene || [],
         });
 
-        const refs = uniqueStrings([
-          ...buildReferences(sceneCharacters, selectedPoses),
-          ...stableIdentityRefs,
-        ]);
+        const refs = buildReferences(referenceCharacters, selectedPoses);
 
         const totalBookSpreads = chapterCount * targetSpreads.length;
         const globalSpreadIdx = ci * targetSpreads.length + si;
@@ -1496,6 +1949,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
           outfitQuickRef,
           crossPageAnchor,
           sceneCharacters,
+          kb,
         });
 
         const result = await generateImageSafe(project, {
@@ -1530,17 +1984,13 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
       for (let si = existing.spreads.length; si < moments.length; si++) {
         const moment = moments[si];
 
-        const { sceneCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
+        const { sceneCharacters, referenceCharacters, selectedPoses } = buildSceneSelection(allCharacters, {
           moment,
           chapterData,
           names: moment.charactersInScene || chapterData.charactersInScene || [],
         });
 
-        const refs = uniqueStrings([
-          ...buildReferences(sceneCharacters, selectedPoses),
-          ...stableIdentityRefs,
-        ]);
-
+        const refs = buildReferences(referenceCharacters, selectedPoses);
         const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
         const poseLockBlock = buildPoseLockBlock(selectedPoses);
         const poseRefBlock = buildPoseRefInstruction(selectedPoses, sceneCharacters);
@@ -1560,6 +2010,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
           outfitQuickRef,
           crossPageAnchor,
           sceneCharacters,
+          kb,
         });
 
         const result = await generateImageSafe(project, {
@@ -1700,6 +2151,7 @@ export async function generateStageImage({
   traceId,
   characterId,
   compositionDirective = '',
+  previewMode = false,
 }) {
   const project = await Project.findOne({ _id: projectId, userId });
   if (!project) throw new NotFoundError('Project not found');
@@ -1718,10 +2170,8 @@ export async function generateStageImage({
     allCharacters.map(c => ({ name: c.name, imageUrl: c.imageUrl?.slice(0, 50) }))
   );
   const bookTitle = project.artifacts?.outline?.bookTitle || project.title;
-  const stableIdentityRefs = buildInitialRefs(allCharacters);
-
   let prompt;
-  let refs = stableIdentityRefs;
+  let refs = [];
   let sceneCharacters = [];
   let selectedPoses = [];
   let momentTitle = '';
@@ -1747,11 +2197,9 @@ export async function generateStageImage({
       });
 
       sceneCharacters = sceneSelection.sceneCharacters;
+      const referenceCharacters = sceneSelection.referenceCharacters;
       selectedPoses = sceneSelection.selectedPoses;
-      refs = uniqueStrings([
-        ...buildReferences(sceneCharacters, selectedPoses),
-        ...stableIdentityRefs,
-      ]);
+      refs = buildReferences(referenceCharacters, selectedPoses);
 
       const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
       const poseLockBlock = buildPoseLockBlock(selectedPoses);
@@ -1776,6 +2224,7 @@ export async function generateStageImage({
         outfitQuickRef,
         crossPageAnchor,
         sceneCharacters,
+        kb,
       });
     } else {
       const pictureBook = isPictureBook(project.ageRange);
@@ -1816,11 +2265,10 @@ export async function generateStageImage({
         });
 
         sceneCharacters = sceneSelection.sceneCharacters;
+        const referenceCharacters = sceneSelection.referenceCharacters;
         selectedPoses = sceneSelection.selectedPoses;
-        refs = uniqueStrings([
-          ...buildReferences(sceneCharacters, selectedPoses),
-          ...stableIdentityRefs,
-        ]);
+        refs = buildReferences(referenceCharacters, selectedPoses);
+
 
         const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
         const poseLockBlock = buildPoseLockBlock(selectedPoses);
@@ -1845,6 +2293,7 @@ export async function generateStageImage({
           outfitQuickRef,
           crossPageAnchor,
           sceneCharacters,
+          kb,
         });
       } else {
         const moments = getChapterIllustrationMoments(chapterData, chapterContent_, project.ageRange);
@@ -1857,11 +2306,9 @@ export async function generateStageImage({
         });
 
         sceneCharacters = sceneSelection.sceneCharacters;
+        const referenceCharacters = sceneSelection.referenceCharacters;
         selectedPoses = sceneSelection.selectedPoses;
-        refs = uniqueStrings([
-          ...buildReferences(sceneCharacters, selectedPoses),
-          ...stableIdentityRefs,
-        ]);
+        refs = buildReferences(referenceCharacters, selectedPoses);
 
         const characterLockBlock = buildCharacterLockBlock(sceneCharacters);
         const poseLockBlock = buildPoseLockBlock(selectedPoses);
@@ -1902,11 +2349,15 @@ export async function generateStageImage({
           outfitQuickRef,
           crossPageAnchor,
           sceneCharacters,
+          kb,
         });
       }
     }
   } else if (task === 'cover') {
-    sceneCharacters = allCharacters;
+    // Story-aware cover character selection (respects characterMustInclude,
+    // characterComposition role hints, and story/outline theme relevance)
+    sceneCharacters = selectCoverCharacters(allCharacters, kb, project);
+
     selectedPoses = sceneCharacters.map((c) => {
       const pose = selectBestPoseForCharacter(c, {});
       return {
@@ -1936,6 +2387,7 @@ export async function generateStageImage({
       sceneCharacters,
       kb,
       ageMode: getAgeMode(project.ageRange),
+      previewMode,
     });
   } else if (task === 'back-cover') {
     sceneCharacters = allCharacters;
@@ -1961,6 +2413,17 @@ export async function generateStageImage({
       kb,
       ageMode: getAgeMode(project.ageRange),
     });
+  } else if (task === 'spine') {
+    refs = [];
+
+    prompt = buildSpinePrompt({
+      project,
+      bookTitle,
+      authorName: safeStr(kb?.coverDesign?.authorName) || safeStr(project.authorName) || '',
+      kb,
+      ageMode: getAgeMode(project.ageRange),
+      previewMode,
+    });
   } else if (task === 'character-style') {
     let character = null;
 
@@ -1985,7 +2448,7 @@ export async function generateStageImage({
     });
   } else {
     throw Object.assign(
-      new Error(`Unknown image task: "${task}". Valid tasks: illustration, illustrations, cover, back-cover, character-style`),
+      new Error(`Unknown image task: "${task}". Valid tasks: illustration, illustrations, cover, back-cover, spine, character-style`),
       { code: 'UNKNOWN_TASK' }
     );
   }
@@ -2088,6 +2551,12 @@ export async function generateStageImage({
       ...(project.artifacts?.cover || {}),
       backUrl: result.imageUrl,
       backPrompt: prompt,
+    };
+  } else if (task === 'spine') {
+    setFields['artifacts.cover'] = {
+      ...(project.artifacts?.cover || {}),
+      spineUrl: result.imageUrl,
+      spinePrompt: prompt,
     };
   }
 

@@ -28,6 +28,25 @@ export async function authenticate(req, res, next) {
 }
 
 /**
+ * Like authenticate but does NOT block unauthenticated requests.
+ * Sets req.user if a valid token is present, otherwise continues as guest.
+ */
+export async function optionalAuthenticate(req, res, next) {
+  try {
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) return next();
+
+    const token = header.slice(7);
+    const payload = jwt.verify(token, config.jwt.secret);
+    const user = await User.findById(payload.sub).select('+passwordHash');
+    if (user) req.user = user;
+    next();
+  } catch {
+    next(); // invalid token → continue as guest
+  }
+}
+
+/**
  * Require admin role.
  */
 export function requireAdmin(req, res, next) {

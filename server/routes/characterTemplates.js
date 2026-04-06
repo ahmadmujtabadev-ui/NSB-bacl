@@ -1159,14 +1159,12 @@ async function mergeDefaultThumbnails(defaults) {
 // ─── GET /api/character-templates ────────────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
+    const query = req.user
+      ? { defaultTemplateRef: '', $or: [{ createdBy: req.user._id }, { isPublic: true }] }
+      : { defaultTemplateRef: '', isPublic: true };
+
     const [userTemplates, defaultsWithThumbnails] = await Promise.all([
-      CharacterTemplate.find({
-        defaultTemplateRef: '',       // exclude override-only docs
-        $or: [
-          { createdBy: req.user._id },
-          { isPublic: true },
-        ],
-      }).sort({ createdAt: -1 }).lean(),
+      CharacterTemplate.find(query).sort({ createdAt: -1 }).lean(),
       mergeDefaultThumbnails(DEFAULT_TEMPLATES),
     ]);
 

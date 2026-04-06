@@ -58,7 +58,7 @@ export function resolveChapterCount(project, kb, { fromOutline = false } = {}) {
 
   // 2. KB chapterRange (middleGrade only — picture-books don't use it)
   const kbRange = kb?.bookFormatting?.middleGrade?.chapterRange;
-  const fromKb  = parseChapterRangeMax(kbRange);
+  const fromKb = parseChapterRangeMax(kbRange);
   if (!isNaN(fromKb) && fromKb > 0) return fromKb;
 
   // 3. Explicit project field
@@ -87,60 +87,61 @@ export function resolveFormattingRules(project, kb) {
   // ── Shared defaults ────────────────────────────────────────────────────────
   const rules = {
     mode,
-    spreadOnly:       profile.spreadOnly,
-    chapterProse:     profile.chapterProse,
+    spreadOnly: profile.spreadOnly,
+    chapterProse: profile.chapterProse,
     // spread / picture-book
-    maxWordsPerSpread: profile.maxWords ,
-    spreadCount:       Number(project.chapterCount) || 10,
-    pageFlow:          [],
-    pageCount:         Number(project.chapterCount) || 10,
-    segmentCount:      '',
-    wordCountTarget:   '',
-    readingType:       'parent-read',
-    pageLayout:        '',
-    reflectionPrompt:  '',
-    bonusPageContent:  '',
-    emotionalPattern:  null,
+    maxWordsPerSpread: profile.maxWords,
+    spreadCount: Number(project.chapterCount) || 10,
+    pageFlow: [],
+    pageCount: Number(project.chapterCount) || 10,
+    segmentCount: '',
+    wordCountTarget: '',
+    readingType: 'parent-read',
+    pageLayout: '',
+    reflectionPrompt: '',
+    bonusPageContent: '',
+    emotionalPattern: null,
     illustrationStyle: '',
-    colorPalette:      '',
-    fontPreferences:   [],
-    specialRules:      [],
+    colorPalette: '',
+    fontPreferences: [],
+    specialRules: [],
     // chapter-book
     minChapterWords: profile.minChapterWords || 900,
     maxChapterWords: profile.maxChapterWords || 1400,
-    chapterCount:    resolveChapterCount(project, kb),
-    chapterRhythm:   [],
-    frontMatter:     [],
-    endMatter:       [],
-    sceneLength:     '',
+    chapterCount: resolveChapterCount(project, kb),
+    chapterRhythm: [],
+    frontMatter: [],
+    endMatter: [],
+    sceneLength: '',
   };
 
   if (mode === 'spreads-only') {
     console.log("spread only")
     const u = kb?.underSixDesign || {};
     console.log("under-6 design rules:", u);
-    if (u.maxWordsPerSpread)       rules.maxWordsPerSpread = Number(u.maxWordsPerSpread) || rules.maxWordsPerSpread;
-    if (u.readingType)             rules.readingType       = u.readingType;
-    if (u.pageLayout)              rules.pageLayout        = u.pageLayout;
-    if (u.reflectionPrompt)        rules.reflectionPrompt  = u.reflectionPrompt;
-    if (u.bonusPageContent)        rules.bonusPageContent  = u.bonusPageContent;
-    if (u.emotionalPattern)        rules.emotionalPattern  = u.emotionalPattern;
-    if (u.illustrationStyle)       rules.illustrationStyle = u.illustrationStyle;
-    if (u.colorPalette)            rules.colorPalette      = u.colorPalette;
-    if (u.fontPreferences?.length) rules.fontPreferences   = u.fontPreferences;
-    if (u.specialRules?.length)    rules.specialRules      = u.specialRules;
+    if (u.maxWordsPerSpread) rules.maxWordsPerSpread = Number(u.maxWordsPerSpread) || rules.maxWordsPerSpread;
+    if (u.readingType) rules.readingType = u.readingType;
+    if (u.pageLayout) rules.pageLayout = u.pageLayout;
+    if (u.reflectionPrompt) rules.reflectionPrompt = u.reflectionPrompt;
+    if (u.bonusPageContent) rules.bonusPageContent = u.bonusPageContent;
+    if (u.emotionalPattern) rules.emotionalPattern = u.emotionalPattern;
+    if (u.illustrationStyle) rules.illustrationStyle = u.illustrationStyle;
+    if (u.colorPalette) rules.colorPalette = u.colorPalette;
+    if (u.fontPreferences?.length) rules.fontPreferences = u.fontPreferences;
+    if (u.specialRules?.length) rules.specialRules = u.specialRules;
     // spread count from junior page count if available
     const jr = kb?.bookFormatting?.junior || {};
-    if (jr.pageCount) {
-      const nums = String(jr.pageCount).match(/\d+/g);
+    const jrPageCount = jr.pageCount || kb?.underSixDesign?.pageCount;
+    if (jrPageCount) {
+      const nums = String(jrPageCount).match(/\d+/g);
       if (nums) rules.spreadCount = Math.max(...nums.map(Number));
     }
 
   } else if (mode === 'picture-book') {
     const jr = kb?.bookFormatting?.junior || {};
-    if (jr.wordCount)          rules.wordCountTarget = jr.wordCount;
-    if (jr.pageFlow?.length)   rules.pageFlow        = jr.pageFlow;
-    if (jr.segmentCount)       rules.segmentCount    = jr.segmentCount;
+    if (jr.wordCount) rules.wordCountTarget = jr.wordCount;
+    if (jr.pageFlow?.length) rules.pageFlow = jr.pageFlow;
+    if (jr.segmentCount) rules.segmentCount = jr.segmentCount;
     if (jr.pageCount) {
       const nums = String(jr.pageCount).match(/\d+/g);
       if (nums) rules.pageCount = Math.max(...nums.map(Number));
@@ -152,14 +153,14 @@ export function resolveFormattingRules(project, kb) {
 
   } else if (mode === 'chapter-book') {
     const mg = kb?.bookFormatting?.middleGrade || {};
-    if (mg.wordCount)             rules.wordCountTarget = mg.wordCount;
-    if (mg.sceneLength)           rules.sceneLength     = mg.sceneLength;
-    if (mg.chapterRhythm?.length) rules.chapterRhythm   = mg.chapterRhythm;
-    if (mg.frontMatter?.length)   rules.frontMatter     = mg.frontMatter;
-    if (mg.endMatter?.length)     rules.endMatter       = mg.endMatter;
+    if (mg.wordCount) rules.wordCountTarget = mg.wordCount;
+    if (mg.sceneLength) rules.sceneLength = mg.sceneLength;
+    if (mg.chapterRhythm?.length) rules.chapterRhythm = mg.chapterRhythm;
+    if (mg.frontMatter?.length) rules.frontMatter = mg.frontMatter;
+    if (mg.endMatter?.length) rules.endMatter = mg.endMatter;
     // Derive per-chapter word targets (KB > profile defaults)
     if (mg.sceneLength) {
-      const n = parseInt(String(mg.sceneLength).replace(/[^0-9]/g, ''), 10);
+      const n = parseChapterRangeMax(mg.sceneLength); // already handles "300–500" → 500
       if (!isNaN(n) && n > 0) { rules.minChapterWords = Math.round(n * 0.85); rules.maxChapterWords = Math.round(n * 1.15); }
     } else if (mg.wordCount && mg.chapterRange) {
       const total = parseInt(String(mg.wordCount).replace(/[^0-9]/g, ''), 10);
@@ -183,19 +184,19 @@ export function resolveBackgroundRules(project, kb) {
   const bg = kb?.backgroundSettings;
   if (!bg) return null;
   const { mode } = getAgeProfile(project.ageRange);
-  const groupKey  = mode === 'chapter-book' ? 'middleGrade' : 'junior';
-  const bgGroup   = bg[groupKey] || bg.junior || bg.middleGrade || {};
+  const groupKey = mode === 'chapter-book' ? 'middleGrade' : 'junior';
+  const bgGroup = bg[groupKey] || bg.junior || bg.middleGrade || {};
   return {
-    tone:             bgGroup.tone             || '',
-    locations:        bgGroup.locations        || [],
-    colorStyle:       bgGroup.colorStyle       || '',
-    lightingStyle:    bgGroup.lightingStyle    || '',
-    timeOfDay:        bgGroup.timeOfDay        || '',
-    cameraHint:       bgGroup.cameraHint       || '',
-    keyFeatures:      bgGroup.keyFeatures      || [],
-    additionalNotes:  bgGroup.additionalNotes  || '',
-    avoidBackgrounds: bg.avoidBackgrounds      || [],
-    universalRules:   bg.universalRules        || '',
+    tone: bgGroup.tone || '',
+    locations: bgGroup.locations || [],
+    colorStyle: bgGroup.colorStyle || '',
+    lightingStyle: bgGroup.lightingStyle || '',
+    timeOfDay: bgGroup.timeOfDay || '',
+    cameraHint: bgGroup.cameraHint || '',
+    keyFeatures: bgGroup.keyFeatures || [],
+    additionalNotes: bgGroup.additionalNotes || '',
+    avoidBackgrounds: bg.avoidBackgrounds || [],
+    universalRules: bg.universalRules || '',
   };
 }
 
@@ -207,10 +208,10 @@ export function resolveDuaRules(kb) {
   return normArr(kb?.duas || [])
     .filter(d => d.transliteration)
     .map(d => ({
-      arabic:          d.arabic          || '',
+      arabic: d.arabic || '',
       transliteration: d.transliteration,
-      meaning:         d.meaning         || '',
-      when:            d.when            || '',
+      meaning: d.meaning || '',
+      when: d.when || d.context || '',
     }));
 }
 
@@ -253,9 +254,9 @@ export function buildArabicSafetyBlockFromKB(kb) {
   for (const d of normArr(kb?.duas || [])) {
     if (d.arabic && d.transliteration) {
       approved.set(d.transliteration.toLowerCase(), {
-        arabic:          d.arabic,
+        arabic: d.arabic,
         transliteration: d.transliteration,
-        meaning:         d.meaning || '',
+        meaning: d.meaning || '',
       });
     }
   }
@@ -397,27 +398,77 @@ function stripFences(raw) {
   return raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
 }
 
+/**
+ * Escape literal control characters (newlines, tabs, carriage returns) that
+ * appear INSIDE JSON string values. The AI occasionally writes multi-paragraph
+ * chapterText with raw newlines, which makes JSON.parse fail even though the
+ * JSON structure is otherwise valid.
+ */
+function fixJsonStrings(text) {
+  if (!text || typeof text !== 'string') return text;
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\n') { result += '\\n'; continue; }
+      if (ch === '\r') { continue; }           // strip bare CR
+      if (ch === '\t') { result += '\\t'; continue; }
+    }
+    result += ch;
+  }
+  return result;
+}
+
 function safeParse(text) {
   if (!text) return { ok: false, data: { raw: text } };
 
   const clean = stripFences(text);
 
+  // ── Attempt 1: direct parse ───────────────────────────────────────────────
   try {
     const parsed = JSON.parse(clean);
     return { ok: true, data: parsed };
-  } catch (_) {}
+  } catch (_) { }
+
+  // ── Attempt 2: fix unescaped control chars inside strings, then parse ─────
+  try {
+    const fixed = fixJsonStrings(clean);
+    const parsed = JSON.parse(fixed);
+    console.warn('[TextService] JSON recovered by fixing unescaped string chars');
+    return { ok: true, data: parsed };
+  } catch (_) { }
 
   const firstBrace = clean.indexOf('{');
   const lastBrace = clean.lastIndexOf('}');
+
+  // ── Attempt 3: brace-slice then fix ──────────────────────────────────────
   if (firstBrace !== -1 && lastBrace > firstBrace) {
     try {
-      const slice = clean.slice(firstBrace, lastBrace + 1);
+      const slice = fixJsonStrings(clean.slice(firstBrace, lastBrace + 1));
       const parsed = JSON.parse(slice);
       console.warn('[TextService] JSON recovered via brace-slicing');
       return { ok: true, data: parsed };
-    } catch (_) {}
+    } catch (_) { }
   }
 
+  // ── Attempt 4: close truncated structure then fix ─────────────────────────
   if (firstBrace !== -1) {
     try {
       let partial = clean.slice(firstBrace);
@@ -437,16 +488,206 @@ function safeParse(text) {
         if (ch === ']') openBrackets--;
       }
 
-      if (inString) partial += '"...(truncated)"';
+      if (inString) partial += '"';           // close open string cleanly
       while (openBrackets > 0) { partial += ']'; openBrackets--; }
       while (openBraces > 0) { partial += '}'; openBraces--; }
 
-      const parsed = JSON.parse(partial);
+      const parsed = JSON.parse(fixJsonStrings(partial));
       console.warn('[TextService] JSON recovered by closing truncated structure');
       return { ok: true, data: parsed };
-    } catch (_) {}
+    } catch (_) { }
   }
 
+  // ── Attempt 5: regex field extraction (truncated chapter / spread responses)
+  //    Recovers the most important text fields even when the JSON is cut off
+  //    mid-value and Attempts 1-4 all fail.
+  try {
+    /**
+     * Extract the full value of a JSON string field, tolerating a missing
+     * closing quote (i.e. the response was truncated inside that string).
+     *
+     * Strategy:
+     *  1. Find  "fieldName"  :  "  in the raw text.
+     *  2. Walk forward character-by-character, honouring JSON escape sequences.
+     *  3. Stop at an unescaped closing quote OR at end-of-string.
+     *  4. Return whatever we collected (possibly partial but still useful).
+     */
+    const extractStr = (field) => {
+      // Match opening:  "fieldName"   :   "
+      const startRe = new RegExp(`"${field}"\\s*:\\s*"`);
+      const startMatch = clean.match(startRe);
+      if (!startMatch) return null;
+
+      let i = startMatch.index + startMatch[0].length;
+      let result = '';
+      let esc = false;
+
+      while (i < clean.length) {
+        const ch = clean[i++];
+
+        if (esc) {
+          // Decode common JSON escapes back to real characters
+          switch (ch) {
+            case 'n': result += '\n'; break;
+            case 't': result += '\t'; break;
+            case 'r': result += '\r'; break;
+            case '"': result += '"'; break;
+            case '\\': result += '\\'; break;
+            default: result += ch; break;
+          }
+          esc = false;
+          continue;
+        }
+
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') break;          // clean end of string value
+        result += ch;
+      }
+
+      return result || null;
+    };
+
+    /** Extract a numeric field value. */
+    const extractNum = (field) => {
+      const m = clean.match(new RegExp(`"${field}"\\s*:\\s*(\\d+)`));
+      return m ? Number(m[1]) : null;
+    };
+
+    /**
+     * Extract a JSON array field as a raw string, then try to parse it.
+     * Returns [] on any failure.
+     */
+    const extractArr = (field) => {
+      const startRe = new RegExp(`"${field}"\\s*:\\s*\\[`);
+      const startMatch = clean.match(startRe);
+      if (!startMatch) return [];
+
+      let i = startMatch.index + startMatch[0].length - 1; // points at '['
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let fragment = '';
+
+      while (i < clean.length) {
+        const ch = clean[i++];
+        fragment += ch;
+
+        if (esc) { esc = false; continue; }
+        if (ch === '\\' && inStr) { esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '[') depth++;
+        if (ch === ']') { depth--; if (depth === 0) break; }
+      }
+
+      // Close any open structure if the array was truncated
+      if (depth > 0) { while (depth-- > 0) fragment += ']'; }
+
+      try { return JSON.parse(fixJsonStrings(fragment)); } catch (_) { return []; }
+    };
+
+    // ── Pull every field we care about ──────────────────────────────────────
+
+    // Shared / chapter-book fields
+    const chapterNumber = extractNum('chapterNumber');
+    const chapterTitle = extractStr('chapterTitle');
+    const chapterText = extractStr('chapterText');
+    const chapterSummary = extractStr('chapterSummary');
+    const islamicMoment = extractStr('islamicMoment');
+    const illustrationMoments = extractArr('illustrationMoments');
+
+    // Picture-book / spread fields
+    const spreadOnly = /\"spreadOnly\"\s*:\s*true/i.test(clean);
+    const totalSpreads = extractNum('totalSpreads');
+    const spreads = extractArr('spreads');
+
+    // Story / outline fields
+    const bookTitle = extractStr('bookTitle');
+    const synopsis = extractStr('synopsis');
+    const moral = extractStr('moral');
+    const storyText = extractStr('storyText');
+    const dedicationMsg = extractStr('dedicationMessage');
+
+    // Humanize field
+    const changesMade = extractArr('changesMade');
+
+    // ── Decide which recovery payload makes sense ────────────────────────────
+
+    // Chapter-book chapter
+    if (chapterText && chapterText.length > 80) {
+      console.warn('[TextService] JSON recovered via regex extraction (chapter-book chapter)');
+      return {
+        ok: true,
+        data: {
+          chapterNumber: chapterNumber ?? 1,
+          chapterTitle: chapterTitle ?? `Chapter ${chapterNumber ?? 1}`,
+          chapterText,
+          chapterSummary: chapterSummary ?? '',
+          islamicMoment: islamicMoment ?? '',
+          illustrationMoments: illustrationMoments.length ? illustrationMoments : [],
+          changesMade: changesMade.length ? changesMade : [],
+          _truncated: true,
+        },
+      };
+    }
+
+    // Picture-book chapter (has spreads array but no chapterText)
+    if (spreads.length > 0 && chapterNumber !== null) {
+      console.warn('[TextService] JSON recovered via regex extraction (picture-book chapter)');
+      return {
+        ok: true,
+        data: {
+          chapterNumber: chapterNumber ?? 1,
+          chapterTitle: chapterTitle ?? `Chapter ${chapterNumber ?? 1}`,
+          chapterSummary: chapterSummary ?? '',
+          islamicMoment: islamicMoment ?? '',
+          spreads,
+          changesMade: changesMade.length ? changesMade : [],
+          _truncated: true,
+        },
+      };
+    }
+
+    // Spreads-only book
+    if (spreads.length > 0 && spreadOnly) {
+      console.warn('[TextService] JSON recovered via regex extraction (spreads-only)');
+      return {
+        ok: true,
+        data: {
+          spreadOnly: true,
+          totalSpreads: totalSpreads ?? spreads.length,
+          spreads,
+          changesMade: changesMade.length ? changesMade : [],
+          _truncated: true,
+        },
+      };
+    }
+
+    // Story / outline
+    if (bookTitle || storyText || synopsis) {
+      console.warn('[TextService] JSON recovered via regex extraction (story/outline)');
+      return {
+        ok: true,
+        data: {
+          bookTitle: bookTitle ?? '',
+          synopsis: synopsis ?? '',
+          moral: moral ?? '',
+          storyText: storyText ?? '',
+          dedicationMessage: dedicationMsg ?? '',
+          characters: extractArr('characters'),
+          chapterOutline: extractArr('chapterOutline'),
+          chapters: extractArr('chapters'),
+          _truncated: true,
+        },
+      };
+    }
+
+    // Nothing useful recovered — fall through to hard failure
+  } catch (regexErr) {
+    console.warn('[TextService] Regex extraction attempt threw:', regexErr?.message);
+  }
+
+  // ── All attempts exhausted ────────────────────────────────────────────────
   console.error('[TextService] All JSON parse attempts failed');
   console.error('[TextService] Raw preview:', text?.slice(0, 400));
   return { ok: false, data: { raw: text } };
@@ -455,18 +696,18 @@ function safeParse(text) {
 // ─── Arabic safety block ──────────────────────────────────────────────────────
 
 const ARABIC_PHRASES = {
-  bismillah:        { arabic: 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ', transliteration: 'Bismillah ir-Rahman ir-Raheem', meaning: 'In the name of Allah, the Most Gracious, the Most Merciful' },
-  alhamdulillah:    { arabic: 'الْحَمْدُ لِلَّهِ', transliteration: 'Alhamdulillah', meaning: 'All praise is for Allah' },
-  subhanallah:      { arabic: 'سُبْحَانَ اللَّهِ', transliteration: 'SubhanAllah', meaning: 'Glory be to Allah' },
-  allahu_akbar:     { arabic: 'اللَّهُ أَكْبَرُ', transliteration: 'Allahu Akbar', meaning: 'Allah is the Greatest' },
-  inshallah:        { arabic: 'إِنْ شَاءَ اللَّهُ', transliteration: "In sha' Allah", meaning: 'If Allah wills' },
-  mashallah:        { arabic: 'مَا شَاءَ اللَّهُ', transliteration: "Masha' Allah", meaning: 'What Allah has willed' },
+  bismillah: { arabic: 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ', transliteration: 'Bismillah ir-Rahman ir-Raheem', meaning: 'In the name of Allah, the Most Gracious, the Most Merciful' },
+  alhamdulillah: { arabic: 'الْحَمْدُ لِلَّهِ', transliteration: 'Alhamdulillah', meaning: 'All praise is for Allah' },
+  subhanallah: { arabic: 'سُبْحَانَ اللَّهِ', transliteration: 'SubhanAllah', meaning: 'Glory be to Allah' },
+  allahu_akbar: { arabic: 'اللَّهُ أَكْبَرُ', transliteration: 'Allahu Akbar', meaning: 'Allah is the Greatest' },
+  inshallah: { arabic: 'إِنْ شَاءَ اللَّهُ', transliteration: "In sha' Allah", meaning: 'If Allah wills' },
+  mashallah: { arabic: 'مَا شَاءَ اللَّهُ', transliteration: "Masha' Allah", meaning: 'What Allah has willed' },
   assalamu_alaykum: { arabic: 'السَّلَامُ عَلَيْكُمْ', transliteration: 'Assalamu Alaykum', meaning: 'Peace be upon you' },
   jazakallah_khair: { arabic: 'جَزَاكَ اللَّهُ خَيْرًا', transliteration: 'Jazakallah Khair', meaning: 'May Allah reward you with goodness' },
-  astaghfirullah:   { arabic: 'أَسْتَغْفِرُ اللَّهَ', transliteration: 'Astaghfirullah', meaning: 'I seek forgiveness from Allah' },
-  sabr:             { arabic: 'صَبْر', transliteration: 'Sabr', meaning: 'Patience' },
-  tawakkul:         { arabic: 'تَوَكُّل', transliteration: 'Tawakkul', meaning: 'Trust in Allah' },
-  shukr:            { arabic: 'شُكْر', transliteration: 'Shukr', meaning: 'Gratitude' },
+  astaghfirullah: { arabic: 'أَسْتَغْفِرُ اللَّهَ', transliteration: 'Astaghfirullah', meaning: 'I seek forgiveness from Allah' },
+  sabr: { arabic: 'صَبْر', transliteration: 'Sabr', meaning: 'Patience' },
+  tawakkul: { arabic: 'تَوَكُّل', transliteration: 'Tawakkul', meaning: 'Trust in Allah' },
+  shukr: { arabic: 'شُكْر', transliteration: 'Shukr', meaning: 'Gratitude' },
 };
 
 function buildArabicBlock() {
@@ -496,16 +737,16 @@ function kbBlock(kb, opts = {}) {
   if (!kb) return '';
   const lines = [`KNOWLEDGE BASE: ${kb.name}`];
 
-  if (kb.islamicValues?.length)    lines.push(`Islamic Values: ${kb.islamicValues.join(', ')}`);
-  if (kb.avoidTopics?.length)      lines.push(`Avoid Topics: ${kb.avoidTopics.join(', ')}`);
+  if (kb.islamicValues?.length) lines.push(`Islamic Values: ${kb.islamicValues.join(', ')}`);
+  if (kb.avoidTopics?.length) lines.push(`Avoid Topics: ${kb.avoidTopics.join(', ')}`);
 
   // ── Du'as ────────────────────────────────────────────────────────────────
   if (kb.duas?.length) {
     const duaLines = kb.duas.map(d => {
       const parts = [];
       if (d.transliteration) parts.push(d.transliteration);
-      if (d.meaning)         parts.push(`"${d.meaning}"`);
-      if (d.when)            parts.push(`(when: ${d.when})`);
+      if (d.meaning) parts.push(`"${d.meaning}"`);
+      if (d.when) parts.push(`(when: ${d.when})`);
       return parts.join(' — ');
     }).filter(Boolean);
     if (duaLines.length) lines.push(`Du'as to weave naturally into story: ${duaLines.join(' | ')}`);
@@ -517,7 +758,7 @@ function kbBlock(kb, opts = {}) {
       if (!v.word) return null;
       let entry = v.word;
       if (v.definition) entry += ` (${v.definition})`;
-      if (v.example)    entry += ` — e.g. "${v.example}"`;
+      if (v.example) entry += ` — e.g. "${v.example}"`;
       return entry;
     }).filter(Boolean);
     if (vocabLines.length) lines.push(`Islamic Vocabulary (use naturally in prose): ${vocabLines.join(' | ')}`);
@@ -529,29 +770,29 @@ function kbBlock(kb, opts = {}) {
     const targetGroup = opts.ageGroup === 'underSix' ? 'junior' : (opts.ageGroup || 'junior');
     const bgGroup = bg[targetGroup] || bg.junior;
     if (bgGroup) {
-      if (bgGroup.tone)           lines.push(`Background Tone: ${bgGroup.tone}`);
+      if (bgGroup.tone) lines.push(`Background Tone: ${bgGroup.tone}`);
       if (bgGroup.locations?.length) lines.push(`Preferred Locations: ${bgGroup.locations.join(', ')}`);
-      if (bgGroup.colorStyle)     lines.push(`Color Style: ${bgGroup.colorStyle}`);
-      if (bgGroup.lightingStyle)  lines.push(`Lighting Style: ${bgGroup.lightingStyle}`);
-      if (bgGroup.timeOfDay)      lines.push(`Default Time of Day: ${bgGroup.timeOfDay}`);
-      if (bgGroup.cameraHint)     lines.push(`Default Camera Hint: ${bgGroup.cameraHint}`);
+      if (bgGroup.colorStyle) lines.push(`Color Style: ${bgGroup.colorStyle}`);
+      if (bgGroup.lightingStyle) lines.push(`Lighting Style: ${bgGroup.lightingStyle}`);
+      if (bgGroup.timeOfDay) lines.push(`Default Time of Day: ${bgGroup.timeOfDay}`);
+      if (bgGroup.cameraHint) lines.push(`Default Camera Hint: ${bgGroup.cameraHint}`);
       if (bgGroup.keyFeatures?.length) lines.push(`Scene Key Features: ${bgGroup.keyFeatures.join(', ')}`);
     }
     if (bg.avoidBackgrounds?.length) lines.push(`Avoid Backgrounds: ${bg.avoidBackgrounds.join(', ')}`);
-    if (bg.universalRules)        lines.push(`Background Universal Rules: ${bg.universalRules}`);
+    if (bg.universalRules) lines.push(`Background Universal Rules: ${bg.universalRules}`);
   }
 
   // ── Book formatting (text-gen guide) ───────────────────────────────────
   if (opts.ageGroup === 'middleGrade' && kb.bookFormatting?.middleGrade) {
     const f = kb.bookFormatting.middleGrade;
-    if (f.wordCount)      lines.push(`Target Word Count: ${f.wordCount}`);
-    if (f.chapterRange)   lines.push(`Chapter Count: ${f.chapterRange}`);
-    if (f.sceneLength)    lines.push(`Scene Length: ${f.sceneLength}`);
+    if (f.wordCount) lines.push(`Target Word Count: ${f.wordCount}`);
+    if (f.chapterRange) lines.push(`Chapter Count: ${f.chapterRange}`);
+    if (f.sceneLength) lines.push(`Scene Length: ${f.sceneLength}`);
     if (f.chapterRhythm?.length) lines.push(`Chapter Rhythm: ${f.chapterRhythm.join(' → ')}`);
   }
   if (opts.ageGroup === 'junior' && kb.bookFormatting?.junior) {
     const f = kb.bookFormatting.junior;
-    if (f.wordCount)    lines.push(`Target Word Count: ${f.wordCount}`);
+    if (f.wordCount) lines.push(`Target Word Count: ${f.wordCount}`);
     if (f.pageFlow?.length) lines.push(`Page Flow: ${f.pageFlow.join(' → ')}`);
   }
 
@@ -559,9 +800,9 @@ function kbBlock(kb, opts = {}) {
   if (opts.ageGroup === 'underSix' && kb.underSixDesign) {
     const u = kb.underSixDesign;
     if (u.maxWordsPerSpread) lines.push(`Max Words Per Spread: ${u.maxWordsPerSpread}`);
-    if (u.pageLayout)        lines.push(`Page Layout: ${u.pageLayout}`);
-    if (u.fontStyle)         lines.push(`Font Style: ${u.fontStyle}`);
-    if (u.reflectionPrompt)  lines.push(`Reflection Prompt: ${u.reflectionPrompt}`);
+    if (u.pageLayout) lines.push(`Page Layout: ${u.pageLayout}`);
+    if (u.fontStyle) lines.push(`Font Style: ${u.fontStyle}`);
+    if (u.reflectionPrompt) lines.push(`Reflection Prompt: ${u.reflectionPrompt}`);
     if (u.specialRules?.length) lines.push(`Special Rules: ${u.specialRules.join('; ')}`);
   }
 
@@ -572,18 +813,17 @@ function kbBlock(kb, opts = {}) {
       g => names.includes((g.characterName || '').toLowerCase())
     );
     for (const g of matched) {
-      lines.push(`\nCharacter Guide – ${g.characterName}:`);
-      if (g.speakingStyle)         lines.push(`  Speaking Style: ${g.speakingStyle}`);
-      if (g.dialogueExamples?.length) lines.push(`  Dialogue Examples: ${g.dialogueExamples.join(' | ')}`);
-      if (g.moreInfo)              lines.push(`  Background: ${g.moreInfo}`);
-      if (g.faithGuide) {
-        const f = g.faithGuide;
-        if (f.faithTone)              lines.push(`  Faith Tone: ${f.faithTone}`);
-        if (f.islamicTraits?.length)  lines.push(`  Islamic Traits: ${f.islamicTraits.join(', ')}`);
-        if (f.faithExpressions?.length) lines.push(`  Faith Expressions: ${f.faithExpressions.join('; ')}`);
-        if (f.duaStyle)               lines.push(`  Du'a Style: ${f.duaStyle}`);
-        if (f.faithExamples?.length)  lines.push(`  Faith Examples: ${f.faithExamples.join(' | ')}`);
-      }
+      const f = g.faithGuide || {};
+      lines.push(`\nVOICE GUIDE — ${g.characterName} (non-negotiable):`);
+      if (g.literaryRole) lines.push(`  Role: ${g.literaryRole}`);
+      if (g.speakingStyle) lines.push(`  Voice: ${g.speakingStyle} — every dialogue line must match this exactly`);
+      if (g.moreInfo) lines.push(`  Background: ${g.moreInfo}`);
+      if (f.faithTone) lines.push(`  Faith expression: ${f.faithTone} — woven naturally, never as a lecture`);
+      if (f.duaStyle) lines.push(`  Du'a style: ${f.duaStyle}`);
+      if (f.islamicTraits?.length) lines.push(`  Good qualities (show through actions): ${f.islamicTraits.join(', ')}`);
+      if (f.faithExpressions?.length) lines.push(`  Habitual behaviours: ${f.faithExpressions.join('; ')}`);
+      const allEx = [...(f.faithExamples || []), ...(g.dialogueExamples || [])].filter(Boolean).slice(0, 4);
+      if (allEx.length) lines.push(`  Voice examples: ${allEx.map(e => `"${e.replace(/^"|"$/g, '')}"`).join(' | ')}`);
     }
   }
 
@@ -596,12 +836,12 @@ function kbBlock(kb, opts = {}) {
  */
 function buildKbBlock(project, kb, characters = []) {
   if (!kb) return '';
-  const rules   = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const bgRules = resolveBackgroundRules(project, kb);
-  const duas    = resolveDuaRules(kb);
-  const vocab   = resolveVocabularyRules(kb);
+  const duas = resolveDuaRules(kb);
+  const vocab = resolveVocabularyRules(kb);
   const guideMap = resolveCharacterGuideMap(characters, kb);
-  const lines    = [`KNOWLEDGE BASE: ${kb.name}`];
+  const lines = [`KNOWLEDGE BASE: ${kb.name}`];
 
   // ── Faith layer ────────────────────────────────────────────────────────────
   if (kb.islamicValues?.length)
@@ -623,7 +863,7 @@ function buildKbBlock(project, kb, characters = []) {
     const formatted = vocab.map(v => {
       let s = v.word;
       if (v.definition) s += ` (${v.definition})`;
-      if (v.example)    s += ` — e.g. "${v.example}"`;
+      if (v.example) s += ` — e.g. "${v.example}"`;
       return s;
     });
     lines.push(`Islamic Vocabulary (use naturally, do not define in prose): ${formatted.join(' | ')}`);
@@ -631,38 +871,38 @@ function buildKbBlock(project, kb, characters = []) {
 
   // ── Background rules ───────────────────────────────────────────────────────
   if (bgRules) {
-    if (bgRules.tone)                  lines.push(`Scene Tone: ${bgRules.tone}`);
-    if (bgRules.locations?.length)     lines.push(`Preferred Locations: ${bgRules.locations.join(', ')}`);
-    if (bgRules.colorStyle)            lines.push(`Color Style: ${bgRules.colorStyle}`);
-    if (bgRules.lightingStyle)         lines.push(`Lighting: ${bgRules.lightingStyle}`);
-    if (bgRules.timeOfDay)             lines.push(`Default Time of Day: ${bgRules.timeOfDay}`);
-    if (bgRules.cameraHint)            lines.push(`Default Camera Hint: ${bgRules.cameraHint}`);
-    if (bgRules.keyFeatures?.length)   lines.push(`Key Visual Features: ${bgRules.keyFeatures.join(', ')}`);
-    if (bgRules.additionalNotes)       lines.push(`Scene Notes: ${bgRules.additionalNotes}`);
+    if (bgRules.tone) lines.push(`Scene Tone: ${bgRules.tone}`);
+    if (bgRules.locations?.length) lines.push(`Preferred Locations: ${bgRules.locations.join(', ')}`);
+    if (bgRules.colorStyle) lines.push(`Color Style: ${bgRules.colorStyle}`);
+    if (bgRules.lightingStyle) lines.push(`Lighting: ${bgRules.lightingStyle}`);
+    if (bgRules.timeOfDay) lines.push(`Default Time of Day: ${bgRules.timeOfDay}`);
+    if (bgRules.cameraHint) lines.push(`Default Camera Hint: ${bgRules.cameraHint}`);
+    if (bgRules.keyFeatures?.length) lines.push(`Key Visual Features: ${bgRules.keyFeatures.join(', ')}`);
+    if (bgRules.additionalNotes) lines.push(`Scene Notes: ${bgRules.additionalNotes}`);
     if (bgRules.avoidBackgrounds?.length) lines.push(`⛔ Avoid Backgrounds: ${bgRules.avoidBackgrounds.join(', ')}`);
-    if (bgRules.universalRules)        lines.push(`Universal Scene Rule: ${bgRules.universalRules}`);
+    if (bgRules.universalRules) lines.push(`Universal Scene Rule: ${bgRules.universalRules}`);
   }
 
   // ── Format rules (book-type-specific) ─────────────────────────────────────
   if (rules.mode === 'chapter-book') {
-    if (rules.wordCountTarget)         lines.push(`Total Word Count Target: ${rules.wordCountTarget}`);
-    if (rules.sceneLength)             lines.push(`Scene Length: ${rules.sceneLength}`);
-    if (rules.chapterRhythm?.length)   lines.push(`Chapter Rhythm: ${rules.chapterRhythm.join(' → ')}`);
-    if (rules.frontMatter?.length)     lines.push(`Front Matter: ${rules.frontMatter.join(', ')}`);
-    if (rules.endMatter?.length)       lines.push(`End Matter: ${rules.endMatter.join(', ')}`);
+    if (rules.wordCountTarget) lines.push(`Total Word Count Target: ${rules.wordCountTarget}`);
+    if (rules.sceneLength) lines.push(`Scene Length: ${rules.sceneLength}`);
+    if (rules.chapterRhythm?.length) lines.push(`Chapter Rhythm: ${rules.chapterRhythm.join(' → ')}`);
+    if (rules.frontMatter?.length) lines.push(`Front Matter: ${rules.frontMatter.join(', ')}`);
+    if (rules.endMatter?.length) lines.push(`End Matter: ${rules.endMatter.join(', ')}`);
   } else if (rules.mode === 'picture-book') {
-    if (rules.wordCountTarget)         lines.push(`Total Word Count: ${rules.wordCountTarget}`);
-    if (rules.pageFlow?.length)        lines.push(`Page Flow: ${rules.pageFlow.join(' → ')}`);
-    if (rules.segmentCount)            lines.push(`Segment Count: ${rules.segmentCount}`);
+    if (rules.wordCountTarget) lines.push(`Total Word Count: ${rules.wordCountTarget}`);
+    if (rules.pageFlow?.length) lines.push(`Page Flow: ${rules.pageFlow.join(' → ')}`);
+    if (rules.segmentCount) lines.push(`Segment Count: ${rules.segmentCount}`);
   } else if (rules.mode === 'spreads-only') {
-    if (rules.maxWordsPerSpread)       lines.push(`Max Words Per Spread: ${rules.maxWordsPerSpread}`);
-    if (rules.pageLayout)              lines.push(`Page Layout: ${rules.pageLayout}`);
-    if (rules.readingType)             lines.push(`Reading Type: ${rules.readingType}`);
-    if (rules.illustrationStyle)       lines.push(`Illustration Style: ${rules.illustrationStyle}`);
-    if (rules.colorPalette)            lines.push(`Color Palette: ${rules.colorPalette}`);
-    if (rules.specialRules?.length)    lines.push(`Special Rules: ${rules.specialRules.join('; ')}`);
-    if (rules.reflectionPrompt)        lines.push(`Reflection Prompt (last spread): "${rules.reflectionPrompt}"`);
-    if (rules.bonusPageContent)        lines.push(`Bonus Page: ${rules.bonusPageContent}`);
+    if (rules.maxWordsPerSpread) lines.push(`Max Words Per Spread: ${rules.maxWordsPerSpread}`);
+    if (rules.pageLayout) lines.push(`Page Layout: ${rules.pageLayout}`);
+    if (rules.readingType) lines.push(`Reading Type: ${rules.readingType}`);
+    if (rules.illustrationStyle) lines.push(`Illustration Style: ${rules.illustrationStyle}`);
+    if (rules.colorPalette) lines.push(`Color Palette: ${rules.colorPalette}`);
+    if (rules.specialRules?.length) lines.push(`Special Rules: ${rules.specialRules.join('; ')}`);
+    if (rules.reflectionPrompt) lines.push(`Reflection Prompt (last spread): "${rules.reflectionPrompt}"`);
+    if (rules.bonusPageContent) lines.push(`Bonus Page: ${rules.bonusPageContent}`);
     if (rules.emotionalPattern) {
       const ep = rules.emotionalPattern;
       const parts = [ep.conflictOrQuestion, ep.emotionReaction, ep.resolve].filter(Boolean);
@@ -670,22 +910,54 @@ function buildKbBlock(project, kb, characters = []) {
     }
   }
 
-  // ── Character guides ───────────────────────────────────────────────────────
+  // ── Character guides (voice + faith — injected as precise AI directives) ────
   for (const [name, g] of Object.entries(guideMap)) {
-    lines.push(`\nCharacter Guide — ${name}:`);
-    if (g.speakingStyle)             lines.push(`  Speaking Style: ${g.speakingStyle}`);
-    if (g.dialogueExamples?.length)  lines.push(`  Dialogue Examples: ${g.dialogueExamples.join(' | ')}`);
-    if (g.personalityNotes?.length)  lines.push(`  Personality: ${g.personalityNotes.join('; ')}`);
-    if (g.literaryRole)              lines.push(`  Literary Role: ${g.literaryRole}`);
-    if (g.moreInfo)                  lines.push(`  Background: ${g.moreInfo}`);
-    const f = g.faithGuide;
-    if (f) {
-      if (f.faithTone)                 lines.push(`  Faith Tone: ${f.faithTone}`);
-      if (f.duaStyle)                  lines.push(`  Du'a Style: ${f.duaStyle}`);
-      if (f.islamicTraits?.length)     lines.push(`  Islamic Traits: ${f.islamicTraits.join(', ')}`);
-      if (f.faithExpressions?.length)  lines.push(`  Faith Expressions: ${f.faithExpressions.join('; ')}`);
-      if (f.faithExamples?.length)     lines.push(`  Faith Examples: ${f.faithExamples.join(' | ')}`);
+    const f = g.faithGuide || {};
+    const block = [`\n━━ CHARACTER VOICE LOCK — ${name} (follow exactly) ━━`];
+
+    // Story role
+    if (g.literaryRole) block.push(`  STORY ROLE: ${g.literaryRole}`);
+
+    // Speaking voice — highest priority for dialogue generation
+    if (g.speakingStyle) {
+      block.push(`  SPEAKING VOICE: ${g.speakingStyle}`);
+      block.push(`  → Every line of ${name}'s dialogue must match this voice. No exceptions.`);
     }
+
+    // Personality depth
+    if (g.personalityNotes?.length) block.push(`  PERSONALITY: ${g.personalityNotes.join('; ')}`);
+    if (g.moreInfo) block.push(`  BACKGROUND: ${g.moreInfo}`);
+
+    // Faith character — how Islam shows in their behaviour, never lecturing
+    const faithParts = [];
+    if (f.faithTone) faithParts.push(`Faith expression: ${f.faithTone}`);
+    if (f.duaStyle) faithParts.push(`Du'a style: ${f.duaStyle}`);
+    if (faithParts.length) {
+      block.push(`  FAITH CHARACTER: ${faithParts.join(' | ')}`);
+      block.push(`  → Weave faith naturally into actions and speech — never as a lecture or explanation.`);
+    }
+
+    // Good qualities shown through behaviour
+    if (f.islamicTraits?.length) {
+      block.push(`  GOOD QUALITIES (show through actions, not statements): ${f.islamicTraits.join(', ')}`);
+    }
+
+    // Habitual behaviours
+    if (f.faithExpressions?.length) {
+      block.push(`  HABITUAL BEHAVIOURS: ${f.faithExpressions.join('; ')}`);
+    }
+
+    // Authentic voice examples — AI must match this register
+    const allExamples = [
+      ...(f.faithExamples || []),
+      ...(g.dialogueExamples || []),
+    ].filter(Boolean);
+    if (allExamples.length) {
+      block.push(`  VOICE EXAMPLES (match this register and energy):`);
+      allExamples.slice(0, 5).forEach(ex => block.push(`    • ${ex}`));
+    }
+
+    lines.push(block.join('\n'));
   }
 
   return lines.join('\n');
@@ -705,13 +977,13 @@ function characterBlock(characters) {
   if (!characters?.length) return 'No specific approved characters defined.';
   return `APPROVED CHARACTERS (use ONLY these exact names):
 ${characters.map(c => {
-  const vd = c.visualDNA || {};
-  const mod = c.modestyRules || {};
-  return `  • ${c.name} — ${c.role}, age ${c.ageRange}, ${vd.gender || 'child'}
+    const vd = c.visualDNA || {};
+    const mod = c.modestyRules || {};
+    return `  • ${c.name} — ${c.role}, age ${c.ageRange}, ${vd.gender || 'child'}
     Traits: ${(c.traits || []).join(', ')}
     ${mod.hijabAlways ? 'ALWAYS wears hijab' : ''}
     ${mod.looseClothing ? 'Always modestly dressed' : ''}`;
-}).join('\n')}
+  }).join('\n')}
 RULES:
 - Use ONLY exact names from this list
 - Do NOT invent new people
@@ -881,10 +1153,10 @@ function normalizeSpread(spread, idx, profile, characters = [], fallback = {}) {
   const chars = chooseSceneCharactersFallback(
     characters,
     raw.charactersInScene ||
-      raw.charactersInSpread ||
-      raw.characters ||
-      fallback.charactersInScene ||
-      []
+    raw.charactersInSpread ||
+    raw.characters ||
+    fallback.charactersInScene ||
+    []
   );
 
   const maxWords = profile.maxWords || 24;
@@ -943,11 +1215,11 @@ function normalizeStoryPayload(parsed, ctx) {
     spreadOnly: !!parsed.spreadOnly || profile.spreadOnly,
     islamicTheme: parsed.islamicTheme && typeof parsed.islamicTheme === 'object'
       ? {
-          concept: str(parsed.islamicTheme.concept || ''),
-          arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
-          transliteration: str(parsed.islamicTheme.transliteration || ''),
-          meaning: str(parsed.islamicTheme.meaning || ''),
-        }
+        concept: str(parsed.islamicTheme.concept || ''),
+        arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
+        transliteration: str(parsed.islamicTheme.transliteration || ''),
+        meaning: str(parsed.islamicTheme.meaning || ''),
+      }
       : null,
     dedicationMessage: str(parsed.dedicationMessage || ''),
     characters: normArr(parsed.characters).map((c, i) => {
@@ -989,14 +1261,14 @@ function normalizeOutlinePayload(parsed, ctx) {
       dedicationMessage: str(parsed.dedicationMessage || ''),
       islamicTheme: parsed.islamicTheme && typeof parsed.islamicTheme === 'object'
         ? {
-            title: str(parsed.islamicTheme.title || ''),
-            arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
-            transliteration: str(parsed.islamicTheme.transliteration || ''),
-            meaning: str(parsed.islamicTheme.meaning || ''),
-            reference: str(parsed.islamicTheme.reference || ''),
-            referenceText: str(parsed.islamicTheme.referenceText || ''),
-            whyWeDoIt: str(parsed.islamicTheme.whyWeDoIt || ''),
-          }
+          title: str(parsed.islamicTheme.title || ''),
+          arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
+          transliteration: str(parsed.islamicTheme.transliteration || ''),
+          meaning: str(parsed.islamicTheme.meaning || ''),
+          reference: str(parsed.islamicTheme.reference || ''),
+          referenceText: str(parsed.islamicTheme.referenceText || ''),
+          whyWeDoIt: str(parsed.islamicTheme.whyWeDoIt || ''),
+        }
         : null,
       spreads: normArr(parsed.spreads).slice(0, count).map((s, i) => ({
         spreadIndex: i,
@@ -1023,14 +1295,14 @@ function normalizeOutlinePayload(parsed, ctx) {
     dedicationMessage: str(parsed.dedicationMessage || ''),
     islamicTheme: parsed.islamicTheme && typeof parsed.islamicTheme === 'object'
       ? {
-          title: str(parsed.islamicTheme.title || ''),
-          arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
-          transliteration: str(parsed.islamicTheme.transliteration || ''),
-          meaning: str(parsed.islamicTheme.meaning || ''),
-          reference: str(parsed.islamicTheme.reference || ''),
-          referenceText: str(parsed.islamicTheme.referenceText || ''),
-          whyWeDoIt: str(parsed.islamicTheme.whyWeDoIt || ''),
-        }
+        title: str(parsed.islamicTheme.title || ''),
+        arabicPhrase: str(parsed.islamicTheme.arabicPhrase || ''),
+        transliteration: str(parsed.islamicTheme.transliteration || ''),
+        meaning: str(parsed.islamicTheme.meaning || ''),
+        reference: str(parsed.islamicTheme.reference || ''),
+        referenceText: str(parsed.islamicTheme.referenceText || ''),
+        whyWeDoIt: str(parsed.islamicTheme.whyWeDoIt || ''),
+      }
       : null,
     chapters: padded.map((ch, i) => normalizeOutlineChapter(ch, i, ctx.characters, profile)),
   };
@@ -1173,8 +1445,8 @@ function getSpreadSourceForRerun(project, chapterIndex) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildStoryPrompt({ project, universe, characters, kb }, storyIdea) {
-  const rules   = resolveFormattingRules(project, kb);
-  const arabic  = buildArabicSafetyBlockFromKB(kb);
+  const rules = resolveFormattingRules(project, kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const charBlock = characterBlock(characters);
 
   const poseConstraint = characters.length
@@ -1184,7 +1456,7 @@ function buildStoryPrompt({ project, universe, characters, kb }, storyIdea) {
 - The story prose must DESCRIBE the action matching the poseKey`
     : '';
 
-  // Format description derived from resolved rules (KB-first)
+  // Format description derived from resolved rules (KB-first)f
   const formatDesc = rules.mode === 'spreads-only'
     ? `SPREADS-ONLY PICTURE BOOK for ages ${project.ageRange}:
   - NO chapters — just illustrated pages with short text
@@ -1296,7 +1568,7 @@ Respond ONLY with this JSON:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildSpreadPlanningPrompt({ project, universe, characters, kb }) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const arabic = buildArabicSafetyBlockFromKB(kb);
   const charBlock = characterBlock(characters);
   const poseConstraint = characters.length
@@ -1379,7 +1651,7 @@ Respond ONLY with:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildPictureBookChapterPrompt({ project, universe, characters, kb }, chapterIndex) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const outline = project.artifacts?.outline;
   const outlineChapters = normArr(outline?.chapters);
   const chapterOutline = outlineChapters[chapterIndex];
@@ -1451,13 +1723,13 @@ Respond ONLY with:
 
 function buildChapterBookProsePrompt({ project, universe, characters, kb }, chapterIndex) {
   // All word targets, rhythm, and formatting come from resolved rules (KB-first)
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const { minChapterWords, maxChapterWords } = rules;
 
   const outline = project.artifacts?.outline || {};
   const chapterOutline = normArr(outline?.chapters || [])[chapterIndex];
   const storyText = project.artifacts?.storyText || '';
-  const arabic    = buildArabicSafetyBlockFromKB(kb);
+  const arabic = buildArabicSafetyBlockFromKB(kb);
   const bookStyle = project.bookStyle || {};
 
   const totalChapters = normArr(outline?.chapters || []).length || rules.chapterCount;
@@ -1486,13 +1758,27 @@ function buildChapterBookProsePrompt({ project, universe, characters, kb }, chap
     ? `Chapter Rhythm Guide: ${rules.chapterRhythm.join(' → ')}`
     : '';
 
+  const perChapterTarget = minChapterWords && maxChapterWords
+    ? `${minChapterWords}–${maxChapterWords}`
+    : null;
+  const totalWordBudget = rules.wordCountTarget
+    ? `Total book word budget: ${rules.wordCountTarget} across ${totalChapters} chapters (~${Math.round(parseInt(String(rules.wordCountTarget).replace(/[^0-9]/g, ''), 10) / totalChapters) || maxChapterWords} words per chapter).`
+    : '';
+
   const system = `You are an expert Islamic children's chapter book author for ages ${project.ageRange}.
 
 This is a REAL CHAPTER BOOK, not a spread-based picture book.
 
+⚠ WORD COUNT — HARD LIMITS (most important rule):
+- This chapter MUST be ${perChapterTarget || `${minChapterWords}–${maxChapterWords}`} words.
+- ${totalWordBudget}
+- DO NOT stop before reaching ${minChapterWords} words — a chapter under ${minChapterWords} words is INCOMPLETE.
+- DO NOT exceed ${maxChapterWords} words.
+- If you finish a scene early, extend with more dialogue, inner reflection, or sensory detail until you hit the minimum.
+
 CRITICAL WRITING RULES:
 - Write ONE full prose chapter
-- Length: ${minChapterWords}–${maxChapterWords} words${rules.sceneLength ? ` (KB scene length: ${rules.sceneLength})` : ''}
+- Length: EXACTLY ${perChapterTarget || `${minChapterWords}–${maxChapterWords}`} words${rules.sceneLength ? ` (scene length guide: ${rules.sceneLength})` : ''}
 - Third-person past tense
 - Novel-like, immersive, warm, adventurous
 - Preserve continuity with earlier chapters
@@ -1511,7 +1797,9 @@ CRITICAL STRUCTURE RULES:
 - Return exactly 2 illustrationMoments max
 - Each illustrationMoment must be an object, not a string
 - Use exact approved character names only
-- Output ONLY raw valid JSON`;
+- Output ONLY raw valid JSON — no markdown fences, no code blocks
+- In the chapterText field, separate paragraphs with \\n\\n (escaped newline), NOT literal line breaks
+- Do NOT use unescaped double quotes inside string values`;
 
   const prompt = `Write Chapter ${chapterIndex + 1} of ${totalChapters} of "${project.title}".
 
@@ -1527,13 +1815,12 @@ Islamic Moment: ${chapterOutline?.duaHint || 'A natural Islamic value or faith m
 Ending Beat: ${chapterOutline?.endingBeat || 'End with momentum or emotional resonance'}
 Characters: ${sceneChars.map(c => c.name).join(', ') || 'Use approved characters only'}
 Art Style Reference: ${bookStyle.artStyle || 'Pixar 3D animation'}
-Setting Reference: ${
-  bookStyle.backgroundStyle === 'indoor'
-    ? (bookStyle.indoorRoomDescription || 'indoor setting')
-    : bookStyle.backgroundStyle === 'outdoor'
-      ? (bookStyle.outdoorDescription || 'outdoor setting')
-      : 'mixed indoor/outdoor'
-}
+Setting Reference: ${bookStyle.backgroundStyle === 'indoor'
+      ? (bookStyle.indoorRoomDescription || 'indoor setting')
+      : bookStyle.backgroundStyle === 'outdoor'
+        ? (bookStyle.outdoorDescription || 'outdoor setting')
+        : 'mixed indoor/outdoor'
+    }
 
 ${previousChapters.length ? `PREVIOUS CHAPTER CONTEXT:
 ${JSON.stringify(previousChapters, null, 2)}` : 'This is the opening chapter.'}
@@ -1544,7 +1831,7 @@ Respond ONLY with this JSON:
   "chapterTitle": "${chapterOutline?.title || `Chapter ${chapterIndex + 1}`}",
   "islamicMoment": "specific Islamic value or faith-based moment",
   "chapterSummary": "2-3 sentence summary",
-  "chapterText": "Full prose chapter of ${minChapterWords}-${maxChapterWords} words",
+  "chapterText": "Full prose chapter — MUST be ${minChapterWords}–${maxChapterWords} words. Hard limit: ${maxChapterWords} words.",
   "illustrationMoments": [
     {
       "momentTitle": "string",
@@ -1567,7 +1854,7 @@ Respond ONLY with this JSON:
 // ══════════════════════════════════════════════════════════════════════════════
 
 function buildSpreadsOnlyPrompt({ project, universe, characters, kb }) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const arabic = buildArabicSafetyBlockFromKB(kb);
   const outline = project.artifacts?.outline;
   const count = normArr(outline?.spreads || []).length || rules.spreadCount;
@@ -1630,7 +1917,7 @@ Respond ONLY with:
 // ─── Outline ──────────────────────────────────────────────────────────────────
 
 function buildOutlinePrompt({ project, universe, characters, kb }) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const arabic = buildArabicSafetyBlockFromKB(kb);
 
   const system = `You are an expert Islamic children's book author.
@@ -1879,7 +2166,7 @@ Respond ONLY with:
 // }
 
 function buildHumanizePrompt({ project, kb, characters }, chapterIndex) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const arabic = buildArabicSafetyBlockFromKB(kb);
   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
   const chaptersArr = normArr(project.artifacts?.chapters);
@@ -1920,7 +2207,7 @@ YOU MUST make ALL of these improvements:
 
 RULES:
 - The rewritten chapterText MUST be noticeably different from the original
-- Length must remain ${rules.minChapterWords}-${rules.maxChapterWords} words
+- Length MUST be ${rules.minChapterWords}–${rules.maxChapterWords} words — do NOT stop before ${rules.minChapterWords} words
 - Avoid: ${avoidTopics}
 - DO NOT reproduce the original text verbatim
 
@@ -2052,7 +2339,7 @@ Respond ONLY with:
 // }
 
 function buildSpreadHumanizePrompt({ project, characters, kb }) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const spreads = normArr(project.artifacts?.spreads || []);
   const arabic = buildArabicSafetyBlockFromKB(kb);
   const avoidTopics = (kb?.avoidTopics || []).join(', ') || 'none';
@@ -2111,15 +2398,15 @@ Respond ONLY with:
 // ─── Spread rerun ─────────────────────────────────────────────────────────────
 
 function buildSpreadRerunPrompt({ project, kb, characters }, chapterIndex, spreadIndex, customPrompt) {
-  const rules  = resolveFormattingRules(project, kb);
+  const rules = resolveFormattingRules(project, kb);
   const arabic = buildArabicSafetyBlockFromKB(kb);
   const source = getSpreadSourceForRerun(project, chapterIndex);
   const current = source.spreads[spreadIndex] || {};
 
   const system = `You are an expert Islamic ${rules.mode === 'picture-book' ? 'picture book' : 'spreads-only picture book'} author for ages ${project.ageRange}.
 ${rules.mode === 'spreads-only'
-  ? `CRITICAL: The "text" field must be ONE complete natural sentence, max ${rules.maxWordsPerSpread} words.`
-  : `MAX ${rules.maxWordsPerSpread} words per page.`}
+      ? `CRITICAL: The "text" field must be ONE complete natural sentence, max ${rules.maxWordsPerSpread} words.`
+      : `MAX ${rules.maxWordsPerSpread} words per page.`}
 Output ONLY raw valid JSON.
 ${characterBlock(characters)}
 ${arabic}`;
@@ -2314,7 +2601,15 @@ export async function generateStageText({
   console.log(`[TextService] Provider: ${aiRes.provider} | length: ${aiRes.text?.length}`);
 
   const { ok, data: parsedRaw } = safeParse(aiRes.text);
-  if (!ok) console.error('[TextService] ⚠ JSON parse failed — storing raw response');
+  if (!ok) {
+    console.error('[TextService] ⚠ JSON parse failed — raw preview:', aiRes.text?.slice(0, 300));
+    if (effectiveStage === 'chapter' || effectiveStage === 'chapters') {
+      throw Object.assign(
+        new Error(`Chapter ${chapterIndex + 1}: AI returned a non-JSON response. Please retry this chapter.`),
+        { code: 'AI_PARSE_FAILED', chapterIndex }
+      );
+    }
+  }
 
   const fresh = await Project.findById(projectId);
   const setFields = {};

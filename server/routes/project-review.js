@@ -455,6 +455,11 @@ function buildCoverReview(project) {
         if (cover.backUrl) return 'generated';
         return 'draft';
     };
+    const deriveSpineStatus = () => {
+        if (cover.spineStatus === 'approved' || cover.spineApprovedAt) return 'approved';
+        if (cover.spineUrl) return 'generated';
+        return 'draft';
+    };
 
     return {
         front: {
@@ -481,6 +486,19 @@ function buildCoverReview(project) {
             },
             versions: [],
             approvedAt: cover.backApprovedAt || null,
+            updatedAt: nowIso(),
+        },
+        spine: {
+            status: deriveSpineStatus(),
+            current: {
+                imageUrl: cover.spineUrl || '',
+                prompt: cover.spinePrompt || '',
+                seed: cover.spineSeed || null,
+                selectedVariantIndex: cover.spineSelectedVariantIndex ?? 0,
+                variants: normArr(cover.spineVariants),
+            },
+            versions: [],
+            approvedAt: cover.spineApprovedAt || null,
             updatedAt: nowIso(),
         },
     };
@@ -526,6 +544,22 @@ function syncReviewFromArtifacts(project) {
 
     if (!arts.review.cover) {
         arts.review.cover = buildCoverReview(project);
+    } else if (!arts.review.cover.spine) {
+        // Backfill spine node for projects that existed before spine support was added
+        const cover = project.artifacts?.cover || {};
+        arts.review.cover.spine = {
+            status: cover.spineApprovedAt ? 'approved' : cover.spineUrl ? 'generated' : 'draft',
+            current: {
+                imageUrl: cover.spineUrl || '',
+                prompt: cover.spinePrompt || '',
+                seed: cover.spineSeed || null,
+                selectedVariantIndex: cover.spineSelectedVariantIndex ?? 0,
+                variants: normArr(cover.spineVariants || []),
+            },
+            versions: [],
+            approvedAt: cover.spineApprovedAt || null,
+            updatedAt: nowIso(),
+        };
     }
 
     if (!project.workflow) {
@@ -730,6 +764,14 @@ function syncCoverNodeToCore(project, side, node) {
         arts.cover.frontSelectedVariantIndex = current.selectedVariantIndex ?? 0;
         arts.cover.frontApprovedAt = node.approvedAt || null;
         arts.cover.frontStatus = node.status || 'draft';
+    } else if (side === 'spine') {
+        arts.cover.spineUrl = current.imageUrl || '';
+        arts.cover.spinePrompt = current.prompt || '';
+        arts.cover.spineSeed = current.seed || null;
+        arts.cover.spineVariants = normArr(current.variants);
+        arts.cover.spineSelectedVariantIndex = current.selectedVariantIndex ?? 0;
+        arts.cover.spineApprovedAt = node.approvedAt || null;
+        arts.cover.spineStatus = node.status || 'draft';
     } else {
         arts.cover.backUrl = current.imageUrl || '';
         arts.cover.backPrompt = current.prompt || '';
@@ -1696,7 +1738,7 @@ router.get('/:id/review/cover', async (req, res, next) => {
 router.patch('/:id/review/cover/:side/prompt', async (req, res, next) => {
     try {
         const side = req.params.side;
-        if (!['front', 'back'].includes(side)) throw new ValidationError('side must be front or back');
+        if (!['front', 'back', 'spine'].includes(side)) throw new ValidationError('side must be front, back, or spine');
 
         const project = await getProjectForUser(req.params.id, req.user._id);
         const review = syncReviewFromArtifacts(project);
@@ -1727,7 +1769,7 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
     const start = Date.now();
     try {
         const side = req.params.side;
-        if (!['front', 'back'].includes(side)) throw new ValidationError('side must be front or back');
+        if (!['front', 'back', 'spine'].includes(side)) throw new ValidationError('side must be front, back, or spine');
 
         const project = await getProjectForUser(req.params.id, req.user._id);
         const review = syncReviewFromArtifacts(project);
@@ -1751,7 +1793,8 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
         }
 
         const basePrompt = str(req.body.prompt || node.current?.prompt || '');
-        const task = side === 'front' ? 'cover' : 'back-cover';
+        const task = side === 'front' ? 'cover' : side === 'spine' ? 'spine' : 'back-cover';
+        const previewMode = Boolean(req.body.previewMode);
 
         // Each variant gets a distinctly different visual design direction
         const FRONT_COVER_COMPOSITIONS = [
@@ -1788,7 +1831,24 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
             'VARIANT DESIGN: Architectural Islamic tile composition. The border of the back cover features an intricate Islamic geometric tile pattern as a decorative frame — like traditional Moroccan or Ottoman tilework. Interior center is a clean, plain surface in a complementary solid or gradient color (matching front cover). Bottom-right barcode zone clearly visible.',
         ];
 
-        const compositions = side === 'front' ? FRONT_COVER_COMPOSITIONS : BACK_COVER_COMPOSITIONS;
+        const SPINE_COMPOSITIONS = [
+            // V0 — Solid color with subtle geometric texture
+            'VARIANT DESIGN: Clean solid spine. Dominant front-cover color as a rich, flat solid background. Very faint Islamic geometric texture at 8% opacity across the entire surface. Clean vertical title zone. Small crescent accent at top endpoint. Premium minimal design.',
+
+            // V1 — Gradient fade
+            'VARIANT DESIGN: Vertical gradient spine. Smooth two-stop gradient — darker shade of the cover color at top, lighter complementary tone at bottom. No pattern, no texture. Ultra-clean. A very small geometric star motif at the bottom endpoint only.',
+
+            // V2 — Textured parchment
+            'VARIANT DESIGN: Textured parchment spine. Warm parchment or aged-paper texture covering the full spine background. Color tone matches the front cover palette. One small arabesque flourish at the midpoint of the left edge. Clean vertical title band. Elegant artisan quality.',
+
+            // V3 — Ombre with Islamic star at center
+            'VARIANT DESIGN: Ombre with accent. The spine transitions from the dominant cover color (top) through a mid-tone to a slightly lighter value at the bottom. A single small Islamic eight-pointed star motif centered vertically between title and author zones — decorative accent only, not distracting.',
+
+            // V4 — Dark jewel tone variant
+            'VARIANT DESIGN: Deep jewel-tone spine. A rich, deep version of the front cover\'s accent color — teal deep-dive, burgundy, or midnight navy — as a solid background. Very subtle shimmer or metallic-feel surface texture. Small gold-toned crescent or star at the very top. Sophisticated, premium, high-contrast against title text.',
+        ];
+
+        const compositions = side === 'front' ? FRONT_COVER_COMPOSITIONS : side === 'spine' ? SPINE_COMPOSITIONS : BACK_COVER_COMPOSITIONS;
 
         const variants = [];
 
@@ -1804,6 +1864,7 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
                 seed,
                 style: req.body.style,
                 compositionDirective,
+                previewMode,
                 traceId: `review_cover_${side}_${project._id}_v${i}_${Date.now()}`,
             });
 
@@ -1855,7 +1916,7 @@ router.post('/:id/review/cover/:side/regenerate', async (req, res, next) => {
 router.post('/:id/review/cover/:side/select-variant', async (req, res, next) => {
     try {
         const side = req.params.side;
-        if (!['front', 'back'].includes(side)) throw new ValidationError('side must be front or back');
+        if (!['front', 'back', 'spine'].includes(side)) throw new ValidationError('side must be front, back, or spine');
 
         const project = await getProjectForUser(req.params.id, req.user._id);
         const review = syncReviewFromArtifacts(project);
@@ -1891,7 +1952,7 @@ router.post('/:id/review/cover/:side/select-variant', async (req, res, next) => 
 router.post('/:id/review/cover/:side/approve', async (req, res, next) => {
     try {
         const side = req.params.side;
-        if (!['front', 'back'].includes(side)) throw new ValidationError('side must be front or back');
+        if (!['front', 'back', 'spine'].includes(side)) throw new ValidationError('side must be front, back, or spine');
 
         const project = await getProjectForUser(req.params.id, req.user._id);
         const review = syncReviewFromArtifacts(project);
@@ -1908,6 +1969,7 @@ router.post('/:id/review/cover/:side/approve', async (req, res, next) => {
         const frontApproved = review.cover?.front?.status === 'approved' || (side === 'front' && node.status === 'approved');
         const backApproved = review.cover?.back?.status === 'approved' || (side === 'back' && node.status === 'approved');
 
+        // Spine is optional — front + back approval is sufficient to unlock editor
         if (frontApproved && backApproved) {
             project.workflow.stages.cover = true;
             project.workflow.currentStage = 'editor';

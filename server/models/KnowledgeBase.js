@@ -98,32 +98,67 @@ const schema = new Schema({
   //    Rules injected into cover-generation prompts
   // ═══════════════════════════════════════════════════════════════════════════
   coverDesign: {
-    // Branding & layout
-    brandingRules:        { type: [String], default: [] }, // logo placement, title zone
-    titlePlacement:       String,   // e.g. "Top 1/3, visible at thumb/nail size"
-    authorTaglinePlacement: String, // e.g. "Bottom or lower-right corner"
+    // ── Selected visual template ─────────────────────────────────────────────
+    selectedCoverTemplate: { type: String, default: null },
 
-    // Character composition
-    characterComposition: { type: [String], default: [] }, // "eye contact for MG", etc.
-    characterMustInclude: { type: [String], default: [] }, // e.g. "Khaled or Sumaya always"
+    // ── Front Cover content ──────────────────────────────────────────────────
+    bookTitle:            String,   // e.g. "The Desert of Wonders"
+    subtitle:             String,   // e.g. "A Journey Beyond the Stars"
+    authorName:           String,   // e.g. "Zara Al-Amin"
+    mainVisualConcept:    String,   // scene description for AI
+    characterDescription: String,   // character appearance on cover
+    moodTheme:            String,   // e.g. "Fantasy / Dark / Adventure"
+    colorStyle:           String,   // e.g. "Deep purple + white glow + gold accents"
 
-    // Visual atmosphere per group
+    // ── Title placement ──────────────────────────────────────────────────────
+    titlePlacement:          String,
+    authorTaglinePlacement:  String,
+
+    // ── Spine ────────────────────────────────────────────────────────────────
+    selectedSpineTemplate: { type: String, default: null },
+    spineColorBackground:  String,   // derived from spine template
+    spineTypographyStyle:  String,   // derived from spine template
+    spinePromptDirective:  String,   // full AI directive from spine template
+    spineTitle:   String,
+    spineAuthor:  String,
+    publisherLogo: String,
+
+    // ── Back cover ───────────────────────────────────────────────────────────
+    selectedBackTemplate:  { type: String, default: null },
+    backBackgroundStyle:   String,   // derived from back cover template
+    backPromptDirective:   String,   // full AI directive from back cover template
+    blurb:         String,   // 120-180 word story description
+    publisherName: String,
+    website:       String,
+    price:         String,
+    isbn:          String,
+
+    // ── Design / print settings ──────────────────────────────────────────────
+    trimSize:   String,   // e.g. "6 x 9 inches"
+    spineWidth: String,   // e.g. "0.85 inches"
+    bleed:      String,   // e.g. "0.125 inch"
+    resolution: String,   // e.g. "300 DPI"
+
+    // ── Visual style ─────────────────────────────────────────────────────────
+    typographyTitle: String,   // e.g. "Serif / Fantasy / Ultra-bold"
+    typographyBody:  String,   // e.g. "Sans-serif / Clean"
+    lightingEffects: String,   // e.g. "Warm golden glow with atmospheric fog"
+    foregroundLayer: String,   // e.g. "Character silhouette"
+    midgroundLayer:  String,   // e.g. "Landscape, ruins"
+    backgroundLayer: String,   // e.g. "Sky, castle, city"
+
+    // ── Per-series atmosphere & typography ───────────────────────────────────
     atmosphere:  AtmosphereByGroupSchema,
-
-    // Typography per group
     typography:  TypographyByGroupSchema,
 
-    // Optional add-ons and extras
-    optionalAddons:  { type: [String], default: [] }, // badge, corner icon, motif watermark
-    islamicMotifs:   { type: [String], default: [] }, // star pattern, mashrabiya frame …
-
-    // Prohibitions
-    avoidCover:      { type: [String], default: [] },
-
-    extraNotes:      String,
-
-    // Selected visual template (references DEFAULT_COVER_TEMPLATES._id)
-    selectedCoverTemplate: { type: String, default: null },
+    // ── Branding & layout ────────────────────────────────────────────────────
+    brandingRules:        { type: [String], default: [] },
+    characterComposition: { type: [String], default: [] },
+    characterMustInclude: { type: [String], default: [] },
+    optionalAddons:       { type: [String], default: [] },
+    islamicMotifs:        { type: [String], default: [] },
+    avoidCover:           { type: [String], default: [] },
+    extraNotes:           String,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
