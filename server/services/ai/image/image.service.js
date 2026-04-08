@@ -51,6 +51,20 @@ const BASE_NEGATIVE_PROMPT = [
   'different nose',
   'different eye color',
   'different body proportions',
+  'Arabic text',
+  'Arabic calligraphy',
+  'Arabic script',
+  'Islamic calligraphy',
+  'written words',
+  'overlaid text',
+  'text overlay',
+  'subtitle',
+  'speech bubble',
+  'thought bubble',
+  'title card',
+  'different background',
+  'background change',
+  'location change',
 ].join(', ');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -728,7 +742,7 @@ function buildCrossPageAnchor(label, sceneCharacters = []) {
   // not by repeated verbose text that gets truncated after token 77.
   const names = sceneCharacters.map((c) => c.name).join(', ');
   if (!names) return '';
-  return `Illustration "${label}". Characters must look identical to all other illustrations in this book. Only pose, expression, and background may change.`;
+  return `Illustration "${label}". Characters must look identical to all other illustrations in this book — same face, skin tone, outfit, hairstyle. The background must match the scene described (kitchen stays kitchen, bedroom stays bedroom). Do NOT change the scene location from what is described.`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
