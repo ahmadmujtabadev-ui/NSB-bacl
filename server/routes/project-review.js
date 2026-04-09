@@ -1982,4 +1982,77 @@ router.post('/:id/review/cover/:side/approve', async (req, res, next) => {
     }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EDITOR PAGES  — save / load fabricJson + thumbnail per page
+// These endpoints allow the book editor to persist canvas state to MongoDB
+// so it survives page refreshes and reflects in the preview component.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/projects/:id/editor/pages
+ * Returns the saved editorPages array (or [] if never saved).
+ */
+router.get('/:id/editor/pages', async (req, res, next) => {
+    try {
+        const project = await Project.findById(req.params.id);
+        if (!project) throw new NotFoundError('Project not found');
+        if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+
+        const pages = normArr(project.artifacts?.editorPages ?? []);
+        res.json({ pages });
+    } catch (e) {
+        next(e);
+    }
+});
+
+/**
+ * PATCH /api/projects/:id/editor/pages
+ * Body: { pages: Array<{ id, fabricJson, thumbnail, text, title }> }
+ *
+ * Merges the incoming array into artifacts.editorPages keyed by page.id.
+ * Partial updates are fine — only fields present in each page object are
+ * overwritten so unrelated pages are never clobbered.
+ */
+router.patch('/:id/editor/pages', async (req, res, next) => {
+    try {
+        const project = await Project.findById(req.params.id);
+        if (!project) throw new NotFoundError('Project not found');
+        if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+
+        const incoming = req.body?.pages;
+        if (!Array.isArray(incoming) || incoming.length === 0) {
+            return res.status(400).json({ error: 'pages array required' });
+        }
+
+        // Build a map of existing saved pages keyed by id
+        const existing = normArr(project.artifacts?.editorPages ?? []);
+        const byId = {};
+        existing.forEach(p => { if (p?.id) byId[p.id] = p; });
+
+        // Merge incoming pages — only update the fields the editor sends
+        incoming.forEach(p => {
+            if (!p?.id) return;
+            const prev = byId[p.id] ?? { id: p.id };
+            byId[p.id] = {
+                ...prev,
+                ...(p.fabricJson  !== undefined && { fabricJson:  p.fabricJson }),
+                ...(p.thumbnail   !== undefined && { thumbnail:   p.thumbnail }),
+                ...(p.text        !== undefined && { text:        p.text }),
+                ...(p.title       !== undefined && { title:       p.title }),
+                savedAt: new Date().toISOString(),
+            };
+        });
+
+        // Persist — use $set so Mongoose strict:false lets us write to artifacts
+        await Project.updateOne(
+            { _id: project._id },
+            { $set: { 'artifacts.editorPages': Object.values(byId) } },
+        );
+
+        res.json({ saved: incoming.length, total: Object.keys(byId).length });
+    } catch (e) {
+        next(e);
+    }
+});
+
 export default router;
