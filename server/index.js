@@ -21,6 +21,7 @@ import adminRoutes from './routes/admin.js';
 import aiRoutes from './routes/ai/index.js';
 import aiReview from './routes/project-review.js';
 import characterTemplatesRoutes from './routes/characterTemplates.js';
+import exportPdfRoutes from './routes/exportPdf.js';
 
 const app = express();
 
@@ -51,7 +52,8 @@ app.use('/api/characters', authenticate, charactersRoutes);
 app.use('/api/knowledge-bases', authenticate, knowledgeBasesRoutes);
 app.use('/api/projects', authenticate, projectsRoutes);
 app.use('/api/projects', authenticate, pagesRoutes);   // ← page-level editing & approval
-app.use('/api/projects', authenticate, aiReview );   // ← page-level editing & approval
+app.use('/api/projects', authenticate, aiReview );     // ← review workflow
+app.use('/api/projects', authenticate, exportPdfRoutes); // ← Puppeteer PDF export
 app.use('/api/exports', authenticate, exportsRoutes);
 app.use('/api/payments', authenticate, paymentsRoutes);
 app.use('/api/admin', authenticate, adminRoutes);

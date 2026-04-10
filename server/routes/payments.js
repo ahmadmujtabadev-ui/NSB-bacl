@@ -2,6 +2,9 @@ import { Router } from 'express';
 import Stripe from 'stripe';
 import { config } from '../config.js';
 import { User } from '../models/User.js';
+import { Character } from '../models/Character.js';
+import { KnowledgeBase } from '../models/KnowledgeBase.js';
+import { Project } from '../models/Project.js';
 import { CreditTransaction } from '../models/CreditTransaction.js';
 import { addCredits } from '../middleware/credits.js';
 import { ValidationError } from '../errors.js';
@@ -20,12 +23,13 @@ const CREDIT_PACKAGES = [
   { id: 'credits_400', name: '400 Credits', credits: 400, price: 29.99, currency: 'usd' },
 ];
 
-// Subscription plan definitions (mirrors frontend PLANS)
+// Subscription plan definitions (mirrors frontend PLAN_FEATURES)
+// -1 means unlimited
 export const PLAN_LIMITS = {
-  free:    { credits: 50,   booksPerMonth: 1,  characters: 3,   kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
-  creator: { credits: 100,  booksPerMonth: 5,  characters: 10,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
-  author:  { credits: 300,  booksPerMonth: -1, characters: -1,  kdpExport: true,  commercial: true,  teamCollab: false, bulkExport: false, apiAccess: false },
-  studio:  { credits: 1000, booksPerMonth: -1, characters: -1,  kdpExport: true,  commercial: true,  teamCollab: true,  bulkExport: true,  apiAccess: true  },
+  free:    { credits: 50,   booksPerMonth: 1,  characters: 3,   knowledgeBases: 1,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
+  creator: { credits: 100,  booksPerMonth: 5,  characters: 10,  knowledgeBases: 2,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
+  author:  { credits: 300,  booksPerMonth: -1, characters: -1,  knowledgeBases: -1, kdpExport: true,  commercial: true,  teamCollab: false, bulkExport: false, apiAccess: false },
+  studio:  { credits: 1000, booksPerMonth: -1, characters: -1,  knowledgeBases: -1, kdpExport: true,  commercial: true,  teamCollab: true,  bulkExport: true,  apiAccess: true  },
 };
 
 // GET /api/payments/packages
@@ -33,6 +37,36 @@ router.get('/packages', (req, res) => res.json({ packages: CREDIT_PACKAGES }));
 
 // GET /api/payments/balance
 router.get('/balance', (req, res) => res.json({ credits: req.user.credits, plan: req.user.plan }));
+
+// GET /api/payments/plan-limits — returns plan limits + current usage counts
+router.get('/plan-limits', async (req, res, next) => {
+  try {
+    const user = req.user;
+    const limits = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
+
+    // Get current month's book count for booksPerMonth limit
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const [characterCount, kbCount, bookThisMonthCount] = await Promise.all([
+      Character.countDocuments({ userId: user._id }),
+      KnowledgeBase.countDocuments({ userId: user._id }),
+      Project.countDocuments({ userId: user._id, createdAt: { $gte: monthStart } }),
+    ]);
+
+    res.json({
+      plan: user.plan,
+      subscriptionStatus: user.subscriptionStatus,
+      limits,
+      usage: {
+        characters: characterCount,
+        knowledgeBases: kbCount,
+        booksThisMonth: bookThisMonthCount,
+      },
+    });
+  } catch (e) { next(e); }
+});
 
 // GET /api/payments/transactions
 router.get('/transactions', async (req, res, next) => {
