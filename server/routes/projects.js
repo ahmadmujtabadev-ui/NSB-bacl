@@ -539,6 +539,41 @@ router.post('/:id/duplicate', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ─── GET /api/projects/:id/layout-styles ──────────────────────────────────────
+
+router.get('/:id/layout-styles', async (req, res, next) => {
+  try {
+    const p = await Project.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('layoutStyles').lean();
+    if (!p) throw new NotFoundError('Project not found');
+    res.json({ layoutStyles: p.layoutStyles ?? {} });
+  } catch (e) { next(e); }
+});
+
+// ─── PUT /api/projects/:id/layout-styles ──────────────────────────────────────
+
+router.put('/:id/layout-styles', async (req, res, next) => {
+  try {
+    const { fontFamily, textColor, fontSize, bold, italic, textAlign, bgColor } = req.body;
+    const update = {};
+    if (fontFamily !== undefined) update['layoutStyles.fontFamily'] = fontFamily;
+    if (textColor  !== undefined) update['layoutStyles.textColor']  = textColor;
+    if (fontSize   !== undefined) update['layoutStyles.fontSize']   = Number(fontSize);
+    if (bold       !== undefined) update['layoutStyles.bold']       = Boolean(bold);
+    if (italic     !== undefined) update['layoutStyles.italic']     = Boolean(italic);
+    if (textAlign  !== undefined) update['layoutStyles.textAlign']  = textAlign;
+    if (bgColor    !== undefined) update['layoutStyles.bgColor']    = bgColor;
+
+    const p = await Project.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      { $set: update },
+      { new: true, select: 'layoutStyles' },
+    ).lean();
+    if (!p) throw new NotFoundError('Project not found');
+    res.json({ layoutStyles: p.layoutStyles });
+  } catch (e) { next(e); }
+});
+
 // ─── GET /api/projects/:id/summary ────────────────────────────────────────────
 
 router.get('/:id/summary', async (req, res, next) => {

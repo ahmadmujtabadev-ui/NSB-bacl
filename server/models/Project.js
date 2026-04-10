@@ -85,6 +85,17 @@ const schema = new mongoose.Schema({
     stages:            { type: mongoose.Schema.Types.Mixed, default: {} },
   },
 
+  // ─── Layout style settings (saved from the Style Editor in preview) ─────────
+  layoutStyles: {
+    fontFamily: { type: String, default: 'Nunito' },
+    textColor:  { type: String, default: '#1a1a1a' },
+    fontSize:   { type: Number, default: 20 },
+    bold:       { type: Boolean, default: false },
+    italic:     { type: Boolean, default: false },
+    textAlign:  { type: String, default: 'center' },
+    bgColor:    { type: String, default: '#FFFDF5' },
+  },
+
   // ─── Publishing ───────────────────────────────────────────────────────────
   publishedAt: { type: Date },
   shareToken:  { type: String, sparse: true, index: true },

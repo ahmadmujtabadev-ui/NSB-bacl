@@ -18,8 +18,9 @@ export const config = {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
     priceIds: {
-      starter: process.env.STRIPE_PRICE_STARTER || '',
-      pro: process.env.STRIPE_PRICE_PRO || '',
+      creator: process.env.STRIPE_PRICE_CREATOR || '',
+      author:  process.env.STRIPE_PRICE_AUTHOR  || '',
+      studio:  process.env.STRIPE_PRICE_STUDIO  || '',
     },
   },
 

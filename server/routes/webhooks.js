@@ -6,7 +6,12 @@ import { addCredits } from '../middleware/credits.js';
 
 const router = Router();
 
-const PLAN_MONTHLY_CREDITS = { starter: 100, pro: 300 };
+// Monthly credits granted on renewal per plan
+const PLAN_MONTHLY_CREDITS = {
+  creator: 100,
+  author:  300,
+  studio:  1000,
+};
 
 // POST /api/webhooks/stripe
 // Note: body is raw Buffer — mounted before express.json() in index.js
@@ -30,9 +35,12 @@ router.post('/stripe', async (req, res) => {
 
   try {
     switch (event.type) {
-      // ── One-time payment completed ──────────────────────────────────────────
+
+      // ── One-time payment OR subscription start ──────────────────────────────
       case 'checkout.session.completed': {
         const session = event.data.object;
+
+        // One-time credit purchase
         if (session.mode === 'payment' && session.payment_status === 'paid') {
           const { userId, credits } = session.metadata || {};
           if (userId && credits) {
@@ -41,14 +49,22 @@ router.post('/stripe', async (req, res) => {
             console.log(`[Webhook] Added ${amount} credits to user ${userId}`);
           }
         }
+
+        // New subscription activated
         if (session.mode === 'subscription' && session.subscription) {
           const { userId, planId } = session.metadata || {};
           if (userId) {
+            const sub = await stripe.subscriptions.retrieve(session.subscription);
+            const monthlyCredits = PLAN_MONTHLY_CREDITS[planId] || 100;
             await User.findByIdAndUpdate(userId, {
               stripeSubscriptionId: session.subscription,
-              subscriptionStatus: 'active',
-              plan: planId || 'starter',
+              subscriptionStatus: sub.status,
+              plan: planId || 'creator',
+              subscriptionCurrentPeriodEnd: new Date(sub.current_period_end * 1000),
             });
+            // Grant first-month credits immediately
+            await addCredits(userId, monthlyCredits, `${planId} plan activated: ${monthlyCredits} credits`, 'purchase', session.id);
+            console.log(`[Webhook] Subscription activated: plan=${planId}, credits=${monthlyCredits}, user=${userId}`);
           }
         }
         break;
@@ -58,13 +74,32 @@ router.post('/stripe', async (req, res) => {
       case 'invoice.payment_succeeded': {
         const invoice = event.data.object;
         if (invoice.subscription && invoice.billing_reason === 'subscription_cycle') {
-          const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-          const userId = subscription.metadata?.userId;
+          const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+          const userId = sub.metadata?.userId;
           if (userId) {
-            const plan = subscription.metadata?.planId || 'starter';
+            const plan = sub.metadata?.planId || 'creator';
             const monthlyCredits = PLAN_MONTHLY_CREDITS[plan] || 100;
             await addCredits(userId, monthlyCredits, `Monthly credits: ${plan} plan`, 'purchase', invoice.id);
-            console.log(`[Webhook] Renewal: added ${monthlyCredits} credits to ${userId}`);
+            await User.findByIdAndUpdate(userId, {
+              subscriptionStatus: 'active',
+              subscriptionCurrentPeriodEnd: new Date(sub.current_period_end * 1000),
+            });
+            console.log(`[Webhook] Renewal: added ${monthlyCredits} credits to ${userId} (${plan})`);
+          }
+        }
+        break;
+      }
+
+      // ── Payment failed ──────────────────────────────────────────────────────
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        if (invoice.subscription) {
+          const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+          const user = await User.findOne({ stripeSubscriptionId: sub.id });
+          if (user) {
+            user.subscriptionStatus = 'past_due';
+            await user.save();
+            console.log(`[Webhook] Payment failed for user ${user._id}`);
           }
         }
         break;
@@ -73,11 +108,10 @@ router.post('/stripe', async (req, res) => {
       // ── Subscription status changes ─────────────────────────────────────────
       case 'customer.subscription.updated': {
         const sub = event.data.object;
-        const customer = await stripe.customers.retrieve(sub.customer);
-        const user = await User.findOne({ stripeCustomerId: customer.id });
+        const user = await User.findOne({ stripeSubscriptionId: sub.id });
         if (user) {
-          user.subscriptionStatus = sub.status;
-          if (sub.cancel_at_period_end) user.subscriptionStatus = 'canceled';
+          user.subscriptionStatus = sub.cancel_at_period_end ? 'canceled' : sub.status;
+          user.subscriptionCurrentPeriodEnd = new Date(sub.current_period_end * 1000);
           await user.save();
         }
         break;
@@ -85,19 +119,19 @@ router.post('/stripe', async (req, res) => {
 
       case 'customer.subscription.deleted': {
         const sub = event.data.object;
-        const customer = await stripe.customers.retrieve(sub.customer);
-        const user = await User.findOne({ stripeCustomerId: customer.id });
+        const user = await User.findOne({ stripeSubscriptionId: sub.id });
         if (user) {
           user.subscriptionStatus = 'inactive';
           user.plan = 'free';
           user.stripeSubscriptionId = undefined;
+          user.subscriptionCurrentPeriodEnd = undefined;
           await user.save();
+          console.log(`[Webhook] Subscription deleted for user ${user._id}, reverted to free`);
         }
         break;
       }
 
       default:
-        // Ignore unhandled events
         break;
     }
 

@@ -7,15 +7,16 @@ const schema = new mongoose.Schema({
   name:         { type: String, required: true, trim: true },
   role:         { type: String, enum: ['user', 'admin'], default: 'user' },
   credits:      { type: Number, default: 50, min: 0 },
-  plan:         { type: String, enum: ['free', 'starter', 'pro'], default: 'free' },
+  plan:         { type: String, enum: ['free', 'creator', 'author', 'studio'], default: 'free' },
 
-  stripeCustomerId:    { type: String, sparse: true },
-  stripeSubscriptionId:{ type: String },
-  subscriptionStatus:  {
+  stripeCustomerId:      { type: String, sparse: true },
+  stripeSubscriptionId:  { type: String },
+  subscriptionStatus:    {
     type: String,
     enum: ['active', 'past_due', 'canceled', 'trialing', 'inactive'],
     default: 'inactive',
   },
+  subscriptionCurrentPeriodEnd: { type: Date },
 
   lastLoginAt: Date,
 }, {
