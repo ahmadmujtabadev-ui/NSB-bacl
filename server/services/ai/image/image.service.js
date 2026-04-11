@@ -11,6 +11,16 @@ import { DEFAULT_COVER_TEMPLATES } from '../../../constants/coverTemplates.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE_NEGATIVE_PROMPT = [
+  'Arabic text on walls',
+  'Arabic letters on background',
+  'calligraphy on wall',
+  'writing on wall',
+  'text on background',
+  'words on wall',
+  'painted text',
+  'wall text',
+  'decorative Arabic script on surfaces',
+  'Islamic calligraphy on wall surfaces',
   'border',
   'frame',
   'decorative frame',
@@ -757,6 +767,8 @@ FRAMING RULES:
 • No vignette borders
 • No scrapbook styling
 • Full-bleed single illustration only
+• NO Arabic text, calligraphy, or written words on any background surface, wall, or object
+• NO decorative script of any kind on walls, tiles, furniture, or props
 `.trim();
 
 const SINGLE_PANEL = `
@@ -1001,6 +1013,7 @@ function buildSpreadPrompt({
   crossPageAnchor,
   sceneCharacters,
   kb,
+  sceneEnvironment = 'indoor',
 }) {
   const first = String(ageRange || '').match(/\d+/)?.[0];
   const minAge = first ? Number(first) : 7;
@@ -1013,11 +1026,7 @@ function buildSpreadPrompt({
   const kbBg = kb?.backgroundSettings?.[bgKey];
 
   // 1. Style anchor — MUST be first for maximum CLIP weight
-  const styleAnchor = [
-    universeStyle || bs.artStyle || 'Pixar 3D animation style',
-    bs.colorPalette || kbBg?.colorStyle || 'warm pastels',
-    'Islamic children\'s book illustration, professional quality',
-  ].join(', ') + '.';
+  const styleAnchor = ['FULL-BLEED DIGITAL ILLUSTRATION — no borders, no frames, no card edges, no decorative outline', universeStyle || bs.artStyle || 'Pixar 3D animation style', bs.colorPalette || kbBg?.colorStyle || 'warm pastels', 'Islamic children\'s book interior illustration, professional quality'].join(', ') + '.';
 
   // 2. Scene — what is happening
   const scene = spreadText
@@ -1029,12 +1038,14 @@ function buildSpreadPrompt({
   // 3. Contrast anchor — prevents identity blending between 2 characters
   const contrastAnchor = buildContrastAnchor(sceneCharacters);
 
-  // 4. Environment — compact (tone, lighting, time, camera from KB)
+  // 4. Environment — scene location lock + compact lighting/time/camera from KB
+  const isIndoor = !sceneEnvironment || sceneEnvironment === 'indoor';
+  const locationDesc = isIndoor ? (bs.indoorRoomDescription || 'warm cozy room') : (bs.outdoorDescription || 'pleasant outdoor scene');
   const lighting = bs.lightingStyle || kbBg?.lightingStyle || 'warm golden';
   const timeOfDay = kbBg?.timeOfDay || 'afternoon';
-  const envParts = [`Lighting: ${lighting}`, `Time: ${timeOfDay}`];
-  if (kbBg?.cameraHint) envParts.push(`Camera: ${kbBg.cameraHint} shot`);
-  if (kbBg?.tone) envParts.push(`Tone: ${kbBg.tone}`);
+  const envParts = ['SCENE LOCATION LOCK — this scene is ' + (isIndoor ? 'INDOORS' : 'OUTDOORS') + ': ' + locationDesc + '. Keep this exact location. Do NOT change the room or setting.', 'Lighting: ' + lighting, 'Time: ' + timeOfDay];
+  if (kbBg?.cameraHint) envParts.push('Camera: ' + kbBg.cameraHint + ' shot');
+  if (kbBg?.tone) envParts.push('Tone: ' + kbBg.tone);
   const environment = envParts.join('. ') + '.';
 
   // 5. KB background directives — locations, keyFeatures, avoidBackgrounds,
@@ -1050,7 +1061,7 @@ function buildSpreadPrompt({
   const safeZone = textSafeZone(textPosition);
 
   // 8. Format — collapsed to one line
-  const format = 'Full-bleed single illustration. No text, no borders, no frames, no extra characters.';
+  const format = ['Full-bleed single illustration. No text, no borders, no frames, no extra characters.', 'Consistent ' + (universeStyle || 'Pixar 3D') + ' render style — match the shading, line quality, color saturation, and rendering quality of all other illustrations in this book exactly.'].join(' ');
 
   // 9. Custom scene overrides (character-level prefix/suffix)
   const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
@@ -1092,6 +1103,10 @@ function buildCoverKbBlock(cd, project, ageMode) {
       if (tpl.palette?.length)  lines.push(`• TEMPLATE COLOR PALETTE: ${tpl.palette.join(', ')} — use ONLY these hex values for the cover's color scheme.`);
       if (tpl.composition)     lines.push(`• COMPOSITION: ${tpl.composition}`);
       if (tpl.atmosphere)      lines.push(`• ATMOSPHERE: ${tpl.atmosphere}`);
+      // KB overrides supplement the template without contradicting its palette
+      if (cd.moodTheme) lines.push(`• MOOD SUPPLEMENT: ${cd.moodTheme} — reinforce this mood within the template visual language.`);
+      if (cd.colorStyle) lines.push(`• COLOR SUPPLEMENT (works with template palette): ${cd.colorStyle}.`);
+      if (cd.lightingEffects) lines.push(`• LIGHTING SUPPLEMENT: ${cd.lightingEffects}.`);
     }
   }
 
@@ -1137,22 +1152,16 @@ function buildCoverKbBlock(cd, project, ageMode) {
   if (layers.length) lines.push(`• SCENE LAYERS — ${layers.join(' | ')}`);
 
   // ── Atmosphere / mood per series ──────────────────────────────────────────────
-  const atmosphere = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.atmosphere?.junior || '')
-    : ageMode === 'saeeda'
-      ? (cd.atmosphere?.saeeda || '')
-      : (cd.atmosphere?.middleGrade || '');
+  const atmosphere = (ageMode === 'spreads-only' || ageMode === 'picture-book')
+    ? (cd.atmosphere?.junior || cd.atmosphere?.middleGrade || '')
+    : (cd.atmosphere?.middleGrade || cd.atmosphere?.junior || '');
   if (atmosphere) lines.push(`• ATMOSPHERE LOCK: ${atmosphere}`);
 
   // ── Typography (drives title zone visual tone) ────────────────────────────────
-  const typographyOverride = cd.typographyTitle || cd.typographyBody
-    ? [cd.typographyTitle, cd.typographyBody].filter(Boolean).join(' / ')
-    : null;
-  const typographyPerSeries = ageMode === 'underSix' || ageMode === 'junior'
+  const typographyOverride = [cd.typographyTitle, cd.typographyBody].filter(Boolean).join(' / ') || null;
+  const typographyPerSeries = (ageMode === 'spreads-only' || ageMode === 'picture-book')
     ? (cd.typography?.junior || '')
-    : ageMode === 'saeeda'
-      ? (cd.typography?.saeeda || '')
-      : (cd.typography?.middleGrade || '');
+    : (cd.typography?.middleGrade || '');
   const typography = typographyOverride || typographyPerSeries;
   if (typography) {
     lines.push(`• TYPOGRAPHY & TITLE ZONE VISUAL FEEL (locked): ${typography}. The top 25% of the cover background MUST visually match this typographic personality — calligraphic serif = elegant textured top zone; rounded fun = bright bubbly top zone. This is the visual tone of the entire title area.`);
@@ -1197,6 +1206,9 @@ function buildCoverKbBlock(cd, project, ageMode) {
     if (cd.spineTypographyStyle) spineParts.push(`Typography: ${cd.spineTypographyStyle}`);
     lines.push(`• SPINE STYLE: ${spineParts.join(' | ')}`);
   }
+  if (cd.spineTitle) lines.push(`• SPINE TITLE: ${cd.spineTitle}`);
+  if (cd.spineAuthor) lines.push(`• SPINE AUTHOR: ${cd.spineAuthor}`);
+  if (cd.price) lines.push(`• PRICE: ${cd.price}`);
 
   // ── Extra notes ───────────────────────────────────────────────────────────────
   if (cd.extraNotes) lines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
@@ -1236,11 +1248,9 @@ function buildCoverPrompt({
   const authorName = safeStr(cd.authorName);
 
   // Atmosphere per age group
-  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (safeStr(cd.atmosphere?.junior) || 'Bright, warm, joyful colours; cheerful sky; safe and exciting feeling')
-    : ageMode === 'saeeda'
-      ? (safeStr(cd.atmosphere?.saeeda) || 'Dreamlike, magical atmosphere; soft glowing light; elegant wonder-filled scenery')
-      : (safeStr(cd.atmosphere?.middleGrade) || 'Cinematic sunset or golden-hour lighting; rich depth; sense of adventure and discovery');
+  const atmosphereNote = (ageMode === 'spreads-only' || ageMode === 'picture-book')
+    ? (safeStr(cd.atmosphere?.junior) || safeStr(cd.atmosphere?.middleGrade) || 'Bright, warm, joyful colours; cheerful sky; safe and exciting feeling')
+    : (safeStr(cd.atmosphere?.middleGrade) || safeStr(cd.atmosphere?.junior) || 'Cinematic sunset or golden-hour lighting; rich depth; sense of adventure and discovery');
 
   // ── KB directives block (highest-priority — goes first in prompt) ──────────
   const kbBlock = buildCoverKbBlock(cd, project, ageMode);
@@ -1270,10 +1280,11 @@ function buildCoverPrompt({
 
   // ── Allowed names ──────────────────────────────────────────────────────────
   const allowedNames = sceneCharacters.map((c) => c.name).join(', ');
+  const protagonistOnly = sceneCharacters.slice(0, 1);
 
   // ── Default character composition when KB hasn't specified one ──────────────
   const defaultComposition = !cd.characterComposition?.length
-    ? `Character composition: Main character(s) positioned center-to-lower-center as the dominant focal point. Dynamic pose — NOT a static front-facing stance. One character slightly in front of the other for depth. Expression warm and engaging, as if inviting the reader into the story.`
+    ? `Character composition: Single main character positioned center-to-lower-center as the ONLY figure on the cover. Dynamic emotionally expressive pose. Large, dominant, full-body or 3/4 body shot. Expression warm and engaging, as if inviting the reader into the story. NO other characters, NO babies, NO siblings.`
     : null;
 
   // ── Default Islamic motifs when KB hasn't specified any ─────────────────────
@@ -1309,23 +1320,28 @@ function buildCoverPrompt({
     kbBlock,
     // 2. Template scope clarification — what the template controls vs what it cannot touch
     templateScopeNote,
+    // 2a. Hard Arabic calligraphy prohibition — overrides any template default
+    'CRITICAL PROHIBITION — applies even if template style suggests it: NO Arabic calligraphy, NO Arabic script, NO Arabic text bands, NO calligraphy borders, NO written Arabic anywhere on the image — not on walls, arches, borders, banners, or any surface. This overrides any template default that includes calligraphic decoration.',
     // 3. Cover identity
     `PROFESSIONAL PUBLISHED BOOK FRONT COVER — Islamic children\'s book: "${effectiveTitle}".`,
     authorName ? `Author: ${authorName}` : null,
     cd.subtitle ? `Subtitle / Tagline: "${cd.subtitle}"` : null,
     `Design standard: Match the production quality of bestselling published Islamic children\'s books (Kube Publishing, Prolance, Day of Difference level). Cinematic, emotionally rich, print-ready.`,
     // 4. Format constraints
-    NO_BORDER_BLOCK,
+    cd.selectedCoverTemplate && (cd.selectedCoverTemplate.includes('ornate') || cd.selectedCoverTemplate.includes('vintage'))
+      ? 'FRAMING NOTE: This template uses ornate Islamic architectural elements as part of the scene composition — arches, carved wood, geometric panels are scene elements. However: NO flat page border overlay around the image edges. NO Arabic calligraphy band across the top or bottom. NO text border strip. The ornate elements must be INSIDE the scene as background architecture, not as a frame overlay printed over the illustration.'
+      : NO_BORDER_BLOCK,
     SINGLE_PANEL,
     // 5. Dynamic layout zones (preview vs artwork-only)
     layoutZones,
+    cd.titlePlacement ? `TITLE PLACEMENT — HARD RULE: Place the title text zone at "${cd.titlePlacement}". This is non-negotiable. The title zone MUST be at this exact position. Keep this area visually clean and lighter in tone.` : null,
     // 6. Project style lock (only when no template overrides it)
     conditionalStyleLock,
     // 7. Outfit + character identity
     outfitQuickRef,
     characterLockBlock,
     poseRefBlock,
-    `Only these characters may appear on the cover: ${allowedNames || 'main characters only'}.`,
+    `Only ONE character may appear on the cover: ${protagonistOnly.map(c => c.name).join('') || 'the main protagonist only'}. Do NOT add siblings, babies, secondary characters, or any other people. ONE character only — the protagonist — as the sole focal point of the cover.`,
     defaultComposition,
     // 8. Atmosphere, background, motifs
     `Visual atmosphere: ${atmosphereNote}.`,
@@ -1349,11 +1365,9 @@ function buildBackCoverPrompt({
   const effectiveTitle = cd.bookTitle || bookTitle;
   const bs = project?.bookStyle || {};
 
-  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (cd.atmosphere?.junior || 'Soft, bright, cheerful tones; warm and welcoming')
-    : ageMode === 'saeeda'
-      ? (cd.atmosphere?.saeeda || 'Soft glowing dreamlike light; elegant calm')
-      : (cd.atmosphere?.middleGrade || 'Warm cinematic tones; continuation of front cover mood');
+  const atmosphereNote = (ageMode === 'spreads-only' || ageMode === 'picture-book')
+    ? (cd.atmosphere?.junior || cd.atmosphere?.middleGrade || 'Soft, bright, cheerful tones; warm and welcoming')
+    : (cd.atmosphere?.middleGrade || cd.atmosphere?.junior || 'Warm cinematic tones; continuation of front cover mood');
 
   const styleNote = bs.artStyle
     ? `Match the exact same illustration style as the front cover: ${bs.artStyle}.`
@@ -1363,6 +1377,9 @@ function buildBackCoverPrompt({
   const backKbLines = ['BACK COVER DESIGN — LOCKED DIRECTIVES (non-negotiable):'];
 
   // ── Back cover template (highest priority — overrides generic rules below) ──
+  if (cd.selectedBackTemplate) {
+    backKbLines.push(`• BACK COVER TEMPLATE ID: ${cd.selectedBackTemplate} — apply this template's full design system.`);
+  }
   if (cd.backPromptDirective) {
     backKbLines.push(`• BACK COVER VISUAL TEMPLATE (primary directive): ${cd.backPromptDirective}`);
   }
@@ -1380,7 +1397,7 @@ function buildBackCoverPrompt({
   if (cd.brandingRules?.length) backKbLines.push(`• BRANDING RULES: ${cd.brandingRules.join('. ')}.`);
   if (cd.avoidCover?.length) backKbLines.push(`• HARD NEVER — MUST AVOID: ${cd.avoidCover.join(', ')}.`);
   if (cd.publisherName) backKbLines.push(`• PUBLISHER: ${cd.publisherName} — reserve bottom-left zone for publisher details.`);
-  if (cd.isbn) backKbLines.push(`• ISBN: ${cd.isbn} — reserve bottom-right corner for barcode zone.`);
+  if (cd.isbn) backKbLines.push(`• BARCODE ZONE: Reserve a clean white 2×1 inch rectangle at bottom-right corner for barcode — do NOT render any numbers or barcode lines, keep this zone pure white.`);
   if (cd.blurb) backKbLines.push(`• BLURB TEXT ZONE: The center 60% must stay clean and light enough for this synopsis text overlay: "${cd.blurb.substring(0, 120)}..."`);
   if (cd.extraNotes) backKbLines.push(`• EXTRA NOTES: ${cd.extraNotes}`);
   const backKbBlock = backKbLines.length > 1 ? backKbLines.join('\n') : null;
@@ -1391,10 +1408,11 @@ function buildBackCoverPrompt({
     NO_BORDER_BLOCK,
     SINGLE_PANEL,
     backKbBlock,
-    `BACK COVER LAYOUT — REQUIRED:
-• TOP SECTION (top 15%): Subtle publisher logo placeholder area — keep clean with a thin ornamental Islamic header divider or crescent/star motif.
-• CENTER SECTION (middle 60%): A large, clean, slightly lighter or semi-transparent panel/zone — this is where the synopsis text will be overlaid. Background should be soft enough for dark text to be readable over it. Can have very subtle texture or watermark-style Islamic geometric pattern beneath.
-• BOTTOM SECTION (bottom 25%): Bottom-left: small publisher details zone (clean, dark enough for white text). Bottom-right corner: barcode placeholder — a clear 2×1 inch clean white rectangle area at bottom-right where the barcode will be printed.`,
+    `BACK COVER LAYOUT — REQUIRED (artwork zones only — NO rendered text of any kind):
+• TOP SECTION (top 15%): Keep completely clean — subtle Islamic ornamental header divider or crescent motif only. NO publisher name text rendered. NO logo text. Just clean decorative element.
+• CENTER SECTION (middle 60%): Large clean lighter-toned panel — this entire zone must be a solid or very lightly textured surface with NO text, NO labels, NO placeholder text boxes visible. The panel must be BLANK and clean — synopsis text will be added in post-production.
+• BOTTOM SECTION (bottom 25%): Keep completely clean. Bottom-left: a small dark rectangular zone — NO text rendered inside it. Bottom-right corner: a clean white 2×1 inch rectangular area — NO barcode numbers rendered, NO text. These are clean artwork zones only.
+• ABSOLUTE RULE: Do NOT render any words, labels, placeholder text, fake text, lorem ipsum, or any readable or unreadable text anywhere on this image.`,
     styleNote,
     `Background: Full-bleed painted background that directly continues the color palette, lighting mood, and atmosphere of the front cover. If front cover had a sunset sky — back cover has the same sky continuing. If front had warm amber tones — back matches. Creates visual wrap-around feel when both covers are viewed together.`,
     !cd.islamicMotifs?.length
@@ -1426,8 +1444,8 @@ function buildSpinePrompt({ project, bookTitle, authorName, kb, ageMode, preview
   const cd = kb?.coverDesign || {};
   const bs = project?.bookStyle || {};
 
-  const effectiveTitle = safeStr(cd.bookTitle) || safeStr(bookTitle) || 'Book Title';
-  const effectiveAuthor = safeStr(cd.authorName) || safeStr(authorName) || '';
+  const effectiveTitle = safeStr(cd.spineTitle) || safeStr(cd.bookTitle) || safeStr(bookTitle) || 'Book Title';
+  const effectiveAuthor = safeStr(cd.spineAuthor) || safeStr(cd.authorName) || safeStr(authorName) || '';
 
   const colorScheme = safeStr(cd.spineColorBackground) || safeStr(cd.colorStyle) || safeStr(bs.colorPalette) || 'matching front cover palette';
   const lightingStyle = safeStr(cd.lightingEffects) || safeStr(bs.lightingStyle) || 'warm consistent lighting';
@@ -1455,15 +1473,13 @@ function buildSpinePrompt({ project, bookTitle, authorName, kb, ageMode, preview
   const spineKbBlock = spineKbLines.length > 1 ? spineKbLines.join('\n') : null;
 
   // ── Atmosphere per age group ─────────────────────────────────────────────────
-  const atmosphereNote = ageMode === 'underSix' || ageMode === 'junior'
-    ? (safeStr(cd.atmosphere?.junior) || 'Warm, bright, cheerful tones matching front cover')
-    : ageMode === 'saeeda'
-      ? (safeStr(cd.atmosphere?.saeeda) || 'Soft elegant tones matching front cover')
-      : (safeStr(cd.atmosphere?.middleGrade) || 'Rich warm tones matching front cover palette');
+  const atmosphereNote = (ageMode === 'spreads-only' || ageMode === 'picture-book')
+    ? (safeStr(cd.atmosphere?.junior) || safeStr(cd.atmosphere?.middleGrade) || 'Warm, bright, cheerful tones matching front cover')
+    : (safeStr(cd.atmosphere?.middleGrade) || safeStr(cd.atmosphere?.junior) || 'Rich warm tones matching front cover palette');
 
   // ── Typography block ─────────────────────────────────────────────────────────
-  const typographyNote = safeStr(cd.spineTypographyStyle) ||
-    (ageMode === 'junior' || ageMode === 'underSix'
+  const typographyNote = safeStr(cd.spineTypographyStyle) || safeStr(cd.typographyTitle) ||
+    ((ageMode === 'spreads-only' || ageMode === 'picture-book')
       ? (safeStr(cd.typography?.junior) || 'Bold rounded, clear and readable')
       : (safeStr(cd.typography?.middleGrade) || 'Elegant serif, clearly legible'));
 
@@ -1535,11 +1551,7 @@ function buildChapterBookIllustrationPrompt({
   const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
   // 1. Style anchor — FIRST for maximum CLIP weight
-  const styleAnchor = [
-    universeStyle || bs.artStyle || 'Pixar 3D animation style',
-    bs.colorPalette || kbBg?.colorStyle || 'warm pastels',
-    'Islamic children\'s chapter book illustration, professional quality',
-  ].join(', ') + '.';
+  const styleAnchor = ['FULL-BLEED DIGITAL ILLUSTRATION — no borders, no frames, no card edges, no decorative outline', universeStyle || bs.artStyle || 'Pixar 3D animation style', bs.colorPalette || kbBg?.colorStyle || 'warm pastels', 'Islamic children\'s chapter book interior illustration, professional quality'].join(', ') + '.';
 
   // 2. Scene — what is happening
   const scene = `Scene: ${moment.illustrationHint || moment.momentTitle}`;
@@ -1548,12 +1560,7 @@ function buildChapterBookIllustrationPrompt({
   const lighting = bs.lightingStyle || kbBg?.lightingStyle || 'warm golden';
   const timeOfDay = moment.timeOfDay || kbBg?.timeOfDay || 'afternoon';
   const cameraHint = moment.cameraHint || kbBg?.cameraHint || 'medium';
-  const envParts = [
-    `Setting: ${moment.sceneEnvironment || 'mixed'} environment`,
-    `Time: ${timeOfDay}`,
-    `Lighting: ${lighting}`,
-    `Camera: ${cameraHint} shot`,
-  ];
+  const envParts = ['SCENE LOCATION LOCK — this scene is ' + (moment.sceneEnvironment || 'indoor') + ' environment. Keep this location consistent. Do NOT switch rooms or settings.', 'Time: ' + timeOfDay, 'Lighting: ' + lighting, 'Camera: ' + cameraHint + ' shot'];
   if (kbBg?.tone) envParts.push(`Tone: ${kbBg.tone}`);
   const environment = envParts.join('. ') + '.';
 
@@ -1565,7 +1572,7 @@ function buildChapterBookIllustrationPrompt({
   const contrastAnchor = buildContrastAnchor(sceneCharacters);
 
   // 6. Format — one line
-  const format = 'Full-bleed single illustration. No text, no borders, no frames, no extra characters.';
+  const format = ['Full-bleed single illustration. No text, no borders, no frames, no extra characters.', 'Consistent ' + (universeStyle || 'Pixar 3D') + ' render style — match the shading, line quality, color saturation, and rendering quality of all other illustrations in this book exactly.'].join(' ');
 
   return [
     styleAnchor,          // style anchor FIRST — max CLIP weight
@@ -1715,8 +1722,8 @@ function generateImageSafe(project, params, kb) {
   return generateImage({
     ...params,
     negative_prompt,
-    guidance_scale: project?.bookStyle?.guidanceScale ?? 7,
-    steps: project?.bookStyle?.inferenceSteps ?? 35,
+    guidance_scale: project?.bookStyle?.guidanceScale ?? 7.5,
+    steps: project?.bookStyle?.inferenceSteps ?? 40,
   });
 }
 
@@ -1793,6 +1800,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
         crossPageAnchor,
         sceneCharacters,
         kb,
+        sceneEnvironment: spread.sceneEnvironment || 'indoor',
       });
 
       const result = await generateImageSafe(project, {
@@ -1964,6 +1972,7 @@ export async function generateBookIllustrations({ projectId, userId, style, seed
           crossPageAnchor,
           sceneCharacters,
           kb,
+          sceneEnvironment: spread.sceneEnvironment || 'indoor',
         });
 
         const result = await generateImageSafe(project, {
@@ -2239,6 +2248,7 @@ export async function generateStageImage({
         crossPageAnchor,
         sceneCharacters,
         kb,
+        sceneEnvironment: spread.sceneEnvironment || 'indoor',
       });
     } else {
       const pictureBook = isPictureBook(project.ageRange);
@@ -2308,6 +2318,7 @@ export async function generateStageImage({
           crossPageAnchor,
           sceneCharacters,
           kb,
+          sceneEnvironment: spread.sceneEnvironment || 'indoor',
         });
       } else {
         const moments = getChapterIllustrationMoments(chapterData, chapterContent_, project.ageRange);

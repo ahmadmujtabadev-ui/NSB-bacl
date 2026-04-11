@@ -106,8 +106,8 @@ export function resolveFormattingRules(project, kb) {
     fontPreferences: [],
     specialRules: [],
     // chapter-book
-    minChapterWords: profile.minChapterWords || 900,
-    maxChapterWords: profile.maxChapterWords || 1400,
+    minChapterWords: profile.minChapterWords,
+    maxChapterWords: profile.maxChapterWords,
     chapterCount: resolveChapterCount(project, kb),
     chapterRhythm: [],
     frontMatter: [],
@@ -129,27 +129,32 @@ export function resolveFormattingRules(project, kb) {
     if (u.colorPalette) rules.colorPalette = u.colorPalette;
     if (u.fontPreferences?.length) rules.fontPreferences = u.fontPreferences;
     if (u.specialRules?.length) rules.specialRules = u.specialRules;
-    // spread count from junior page count if available
-    const jr = kb?.bookFormatting?.junior || {};
-    const jrPageCount = jr.pageCount || kb?.underSixDesign?.pageCount;
-    if (jrPageCount) {
-      const nums = String(jrPageCount).match(/\d+/g);
+    // spreadCount: underSixDesign.pageCount → bookFormatting.junior.pageCount → project.chapterCount → 10
+    const spreadPageCountRaw = u.pageCount || kb?.bookFormatting?.junior?.pageCount;
+    if (spreadPageCountRaw) {
+      const nums = String(spreadPageCountRaw).match(/\d+/g);
       if (nums) rules.spreadCount = Math.max(...nums.map(Number));
+    } else {
+      rules.spreadCount = Number(project.chapterCount) || 10;
     }
 
   } else if (mode === 'picture-book') {
     const jr = kb?.bookFormatting?.junior || {};
-    if (jr.wordCount) rules.wordCountTarget = jr.wordCount;
     if (jr.pageFlow?.length) rules.pageFlow = jr.pageFlow;
-    if (jr.segmentCount) rules.segmentCount = jr.segmentCount;
-    if (jr.pageCount) {
-      const nums = String(jr.pageCount).match(/\d+/g);
-      if (nums) rules.pageCount = Math.max(...nums.map(Number));
-    }
-    // under-6 design can optionally override maxWordsPerSpread for older picture-books
     const u = kb?.underSixDesign || {};
-    console.log("under-6 design rules:", u);
     if (u.maxWordsPerSpread) rules.maxWordsPerSpread = Number(u.maxWordsPerSpread) || rules.maxWordsPerSpread;
+    // pageCount/spreadCount: underSixDesign.pageCount → bookFormatting.junior.pageCount → project.chapterCount → 10
+    const pbPageCountRaw = u.pageCount || kb?.bookFormatting?.junior?.pageCount;
+    if (pbPageCountRaw) {
+      const nums = String(pbPageCountRaw).match(/\d+/g);
+      if (nums) {
+        rules.pageCount = Math.max(...nums.map(Number));
+        rules.spreadCount = rules.pageCount;
+      }
+    } else {
+      rules.pageCount = Number(project.chapterCount) || 10;
+      rules.spreadCount = rules.pageCount;
+    }
 
   } else if (mode === 'chapter-book') {
     const mg = kb?.bookFormatting?.middleGrade || {};
@@ -285,7 +290,7 @@ export function getAgeProfile(ageRange) {
       spreadOnly: true,
       chapterProse: false,
       rhyme: true,
-      maxWords: 10,
+      maxWords: 20,
       minWords: 0,
       minChapterWords: 0,
       maxChapterWords: 0,
@@ -301,7 +306,7 @@ export function getAgeProfile(ageRange) {
       spreadOnly: false,
       chapterProse: false,
       rhyme: false,
-      maxWords: 24,
+      maxWords: 30,
       minWords: 0,
       minChapterWords: 0,
       maxChapterWords: 0,
@@ -318,8 +323,8 @@ export function getAgeProfile(ageRange) {
     rhyme: false,
     maxWords: 0,
     minWords: 0,
-    minChapterWords: 900,
-    maxChapterWords: 1400,
+    minChapterWords: 500,
+    maxChapterWords: 2000,
     illustrationsPerChapter: 2,
     spreadsPerChapter: 0,
     sentenceStyle: 'rich-novelistic',
@@ -767,7 +772,7 @@ function kbBlock(kb, opts = {}) {
   // ── Background settings (fed into both text + image prompts) ────────────
   if (kb.backgroundSettings) {
     const bg = kb.backgroundSettings;
-    const targetGroup = opts.ageGroup === 'underSix' ? 'junior' : (opts.ageGroup || 'junior');
+    const targetGroup = opts.ageGroup === 'middleGrade' ? 'middleGrade' : 'junior';
     const bgGroup = bg[targetGroup] || bg.junior;
     if (bgGroup) {
       if (bgGroup.tone) lines.push(`Background Tone: ${bgGroup.tone}`);
@@ -800,9 +805,8 @@ function kbBlock(kb, opts = {}) {
   if (opts.ageGroup === 'underSix' && kb.underSixDesign) {
     const u = kb.underSixDesign;
     if (u.maxWordsPerSpread) lines.push(`Max Words Per Spread: ${u.maxWordsPerSpread}`);
-    if (u.pageLayout) lines.push(`Page Layout: ${u.pageLayout}`);
-    if (u.fontStyle) lines.push(`Font Style: ${u.fontStyle}`);
-    if (u.reflectionPrompt) lines.push(`Reflection Prompt: ${u.reflectionPrompt}`);
+    if (u.pageCount) lines.push(`Page Count: ${u.pageCount}`);
+    if (u.fontPreferences?.length) lines.push(`Font Preferences: ${u.fontPreferences.join(', ')}`);
     if (u.specialRules?.length) lines.push(`Special Rules: ${u.specialRules.join('; ')}`);
   }
 
@@ -1148,7 +1152,7 @@ function normalizeIllustrationMoment(moment, idx, characters = [], fallback = {}
   };
 }
 
-function normalizeSpread(spread, idx, profile, characters = [], fallback = {}) {
+function normalizeSpread(spread, idx, profile, characters = [], fallback = {}, kbMaxWords = 0) {
   const raw = spread && typeof spread === 'object' ? spread : {};
   const chars = chooseSceneCharactersFallback(
     characters,
@@ -1159,7 +1163,7 @@ function normalizeSpread(spread, idx, profile, characters = [], fallback = {}) {
     []
   );
 
-  const maxWords = profile.maxWords || 24;
+  const maxWords = kbMaxWords > 0 ? kbMaxWords : (profile.maxWords || 20);
   const normalizedText = profile.chapterProse
     ? str(raw.text || fallback.text || '')
     : ensureSentence(clampTextWords(raw.text || fallback.text || '', maxWords));
@@ -1249,7 +1253,7 @@ function normalizeStoryPayload(parsed, ctx) {
 
 function normalizeOutlinePayload(parsed, ctx) {
   const profile = getAgeProfile(ctx.project.ageRange);
-  const count = Number(ctx.project.chapterCount) || (profile.spreadOnly ? 10 : 4);
+  const count = resolveFormattingRules(ctx.project, ctx.kb).spreadCount || Number(ctx.project.chapterCount) || (profile.spreadOnly ? 10 : 4);
 
   if (profile.spreadOnly) {
     return {
@@ -1310,9 +1314,10 @@ function normalizeOutlinePayload(parsed, ctx) {
 
 function normalizeSpreadPlanningPayload(parsed, ctx) {
   const profile = getAgeProfile(ctx.project.ageRange);
-  const spreadCount = Number(parsed.totalSpreads) || Number(ctx.project.chapterCount) || 10;
+  const rules = resolveFormattingRules(ctx.project, ctx.kb);
+  const spreadCount = Number(parsed.totalSpreads) || rules.spreadCount || Number(ctx.project.chapterCount) || 10;
   const source = normArr(parsed.spreads).slice(0, spreadCount);
-  const spreads = source.map((s, i) => normalizeSpread(s, i, profile, ctx.characters));
+  const spreads = source.map((s, i) => normalizeSpread(s, i, profile, ctx.characters, {}, rules.maxWordsPerSpread));
 
   return {
     spreadOnly: profile.spreadOnly,
@@ -1323,8 +1328,9 @@ function normalizeSpreadPlanningPayload(parsed, ctx) {
 
 function normalizePictureBookChapterPayload(parsed, ctx, chapterIndex) {
   const profile = getAgeProfile(ctx.project.ageRange);
+  const kbMaxWords = resolveFormattingRules(ctx.project, ctx.kb).maxWordsPerSpread;
   const spreads = normArr(parsed.spreads).slice(0, profile.spreadsPerChapter || 2)
-    .map((s, i) => normalizeSpread(s, i, profile, ctx.characters));
+    .map((s, i) => normalizeSpread(s, i, profile, ctx.characters, {}, kbMaxWords));
 
   return {
     chapterNumber: Number(parsed.chapterNumber) || chapterIndex + 1,
@@ -1368,13 +1374,15 @@ function normalizeChapterBookPayload(parsed, ctx, chapterIndex) {
 
 function normalizeHumanizedPictureBookPayload(parsed, ctx, chapterIndex, fallbackChapter = {}) {
   const profile = getAgeProfile(ctx.project.ageRange);
+  const kbMaxWords = resolveFormattingRules(ctx.project, ctx.kb).maxWordsPerSpread;
   const spreads = normArr(parsed.spreads).map((s, i) =>
     normalizeSpread(
       s,
       i,
       profile,
       ctx.characters,
-      normArr(fallbackChapter.spreads)[i] || {}
+      normArr(fallbackChapter.spreads)[i] || {},
+      kbMaxWords
     )
   );
 
@@ -1628,7 +1636,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "${rules.mode === 'spreads-only' ? `ONE complete natural sentence, max ${rules.maxWordsPerSpread} words` : `1-2 sentences, max ${rules.maxWordsPerSpread} words`}",
+      "text": "${rules.mode === 'spreads-only' ? `ONE complete grammatically correct sentence with full meaning — max ${rules.maxWordsPerSpread} words, never truncated` : `1-2 complete sentences, max ${rules.maxWordsPerSpread} words`}",
       "prompt": "instruction that produced this page text",
       "illustrationHint": "clear visual scene",
       "charactersInScene": ["exact approved character names only"],
@@ -1867,7 +1875,7 @@ function buildSpreadsOnlyPrompt({ project, universe, characters, kb }) {
 
 SENTENCE RULES:
 - Every "text" field MUST be one complete grammatical sentence
-- Max ${rules.maxWordsPerSpread} words${rules.pageLayout ? `\n- Layout: ${rules.pageLayout}` : ''}
+- SENTENCE LENGTH: Each sentence MUST be complete and natural. Target ${rules.maxWordsPerSpread} words maximum. NEVER truncate a sentence mid-thought. Every sentence must have a complete subject, verb, and meaning.${rules.pageLayout ? `\n- Layout: ${rules.pageLayout}` : ''}
 - Reading type: ${rules.readingType}
 - Each sentence carries one clear warm emotional moment
 - The ${count} sentences together tell a complete story arc
@@ -1897,7 +1905,7 @@ Respond ONLY with:
   "spreads": [
     {
       "spreadIndex": 0,
-      "text": "ONE complete grammatical sentence, max ${rules.maxWordsPerSpread} words",
+      "text": "ONE complete grammatically correct sentence with full meaning — max ${rules.maxWordsPerSpread} words, never truncated",
       "prompt": "instruction for this page",
       "illustrationHint": "detailed scene",
       "textPosition": "bottom|top",
@@ -2181,7 +2189,7 @@ ${characterBlock(characters)}
 ${arabic}
 Output ONLY raw valid JSON.`;
 
-  if (profile.mode === 'chapter-book') {
+  if (rules.mode === 'chapter-book') {
     const chapterText = String(chapter?.chapterText || chapter?.text || '');
 
     return {
@@ -2243,7 +2251,7 @@ Respond ONLY with this JSON:
     };
   }
 
-  if (profile.mode === 'picture-book') {
+  if (rules.mode === 'picture-book') {
     return {
       system,
       prompt: `REWRITE and IMPROVE picture book chapter ${chapterIndex + 1} of "${project.title}".
@@ -2430,7 +2438,7 @@ Rules:
 Respond ONLY with:
 {
   "spreadIndex": ${spreadIndex},
-  "text": "${profile.mode === 'spreads-only' ? 'ONE complete grammatical sentence' : 'improved spread text'}",
+  "text": "${rules.mode === 'spreads-only' ? 'ONE complete grammatical sentence' : 'improved spread text'}",
   "prompt": ${JSON.stringify(customPrompt)},
   "illustrationHint": "updated scene for approved characters",
   "charactersInScene": ["exact approved names only"],
@@ -2570,7 +2578,7 @@ export async function generateStageText({
   } else if (effectiveStage === 'spreadPlanning') {
     // Each spread needs ~250 tokens (text, hint, characters, emotions, scene fields).
     // Scale with spread count, floor at 4000, cap at 8192.
-    const spreadCount = Number(ctx.project.chapterCount) || 10;
+    const spreadCount = resolveFormattingRules(ctx.project, ctx.kb).spreadCount || Number(ctx.project.chapterCount) || 10;
     const dynamicMin = Math.min(2000 + spreadCount * 250, 8192);
     outputTokens = Math.max(budget.maxOutputTokens || 0, dynamicMin);
   } else if ((effectiveStage === 'chapter' || effectiveStage === 'chapters') && profile.mode === 'chapter-book') {
@@ -2769,7 +2777,7 @@ export async function generateStageText({
         parsed = {
           spreadOnly: true,
           spreads: rawSpreads.map((s, i) =>
-            normalizeSpread(s, i, profile, ctx.characters, originalSpreads[i] || {})
+            normalizeSpread(s, i, profile, ctx.characters, originalSpreads[i] || {}, resolveFormattingRules(ctx.project, ctx.kb).maxWordsPerSpread)
           ),
           changesMade: uniqStrings(parsedRaw.changesMade || []),
         };
@@ -2796,7 +2804,7 @@ export async function generateStageText({
     case 'spreadRerun': {
       const source = getSpreadSourceForRerun(fresh, chapterIndex);
       const fallbackSpread = source.spreads[spreadIndex] || {};
-      parsed = normalizeSpread(parsedRaw, spreadIndex, profile, ctx.characters, fallbackSpread);
+      parsed = normalizeSpread(parsedRaw, spreadIndex, profile, ctx.characters, fallbackSpread, resolveFormattingRules(ctx.project, ctx.kb).maxWordsPerSpread);
 
       if (fresh.artifacts?.spreadOnly || profile.spreadOnly) {
         const spreads = normArr(fresh.artifacts?.spreads);

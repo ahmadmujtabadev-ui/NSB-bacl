@@ -27,7 +27,7 @@ const CREDIT_PACKAGES = [
 // -1 means unlimited
 export const PLAN_LIMITS = {
   free:    { credits: 50,   booksPerMonth: 1,  characters: 3,   knowledgeBases: 1,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
-  creator: { credits: 100,  booksPerMonth: 5,  characters: 10,  knowledgeBases: 2,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
+  creator: { credits: 100,  booksPerMonth: 50,  characters: 50,  knowledgeBases: 10,  kdpExport: false, commercial: false, teamCollab: false, bulkExport: false, apiAccess: false },
   author:  { credits: 300,  booksPerMonth: -1, characters: -1,  knowledgeBases: -1, kdpExport: true,  commercial: true,  teamCollab: false, bulkExport: false, apiAccess: false },
   studio:  { credits: 1000, booksPerMonth: -1, characters: -1,  knowledgeBases: -1, kdpExport: true,  commercial: true,  teamCollab: true,  bulkExport: true,  apiAccess: true  },
 };
