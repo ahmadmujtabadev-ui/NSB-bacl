@@ -1067,6 +1067,8 @@ function buildSpreadPrompt({
   const sceneOverrides = buildScenePromptOverrides(sceneCharacters);
 
   return [
+    NO_BORDER_BLOCK,       // STRICT: no borders, no frames, no Arabic calligraphy
+    SINGLE_PANEL,          // STRICT: single full-bleed illustration only
     styleAnchor,          // style anchor FIRST — max CLIP weight
     scene,                // what is happening
     characterLockBlock,   // who they are (compact: name + color locks only)
@@ -1575,6 +1577,8 @@ function buildChapterBookIllustrationPrompt({
   const format = ['Full-bleed single illustration. No text, no borders, no frames, no extra characters.', 'Consistent ' + (universeStyle || 'Pixar 3D') + ' render style — match the shading, line quality, color saturation, and rendering quality of all other illustrations in this book exactly.'].join(' ');
 
   return [
+    NO_BORDER_BLOCK,       // STRICT: no borders, no frames, no Arabic calligraphy
+    SINGLE_PANEL,          // STRICT: single full-bleed illustration only
     styleAnchor,          // style anchor FIRST — max CLIP weight
     scene,                // what is happening
     characterLockBlock,   // who they are (compact: name + color locks)

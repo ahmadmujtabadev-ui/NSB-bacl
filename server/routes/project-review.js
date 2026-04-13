@@ -3,7 +3,7 @@
 // prose, humanize, illustrations, and cover.
 // This route syncs review nodes with your existing artifacts so current
 // pages/layout/export routes keep working.
-
+import PageContent from '../models/PageContent.js';
 import { Router } from 'express';
 import { Project } from '../models/Project.js';
 import { NotFoundError, ForbiddenError, ValidationError } from '../errors.js';
@@ -12,6 +12,106 @@ import { generateStageImage } from '../services/ai/image/image.service.js';
 import { deductCredits } from '../middleware/credits.js';
 import { STAGE_CREDIT_COSTS } from '../services/ai/ai.billing.js';
 import { logAIUsage } from '../services/ai/ai.telemetry.js';
+import { v2 as cloudinary } from 'cloudinary';
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true,
+});
+
+async function uploadThumbnailToCloudinary(dataUri, projectId, pageId) {
+    if (!dataUri || typeof dataUri !== 'string') return dataUri;
+    if (dataUri.startsWith('http://') || dataUri.startsWith('https://')) return dataUri;
+    const uri = dataUri.startsWith('data:') ? dataUri : `data:image/png;base64,${dataUri}`;
+    const result = await cloudinary.uploader.upload(uri, {
+        folder: `editor-thumbnails/${projectId}`,
+        public_id: pageId,
+        resource_type: 'image',
+        overwrite: true,
+        timeout: 120_000,
+    });
+    return result.secure_url;
+}
+
+/**
+ * Walks a fabricJson object and replaces any base64 `src` values on image
+ * objects (and backgroundImage) with permanent Cloudinary URLs.
+ *
+ * @param {object}  fabricJson
+ * @param {string}  projectId
+ * @param {string}  pageId
+ * @param {Map}     reqCache   - per-request dedup cache (fingerprint → URL).
+ *                               Pass a shared Map across all pages in one PATCH
+ *                               so the same image on multiple pages is only
+ *                               uploaded once per request.
+ */
+async function sanitizeFabricJson(fabricJson, projectId, pageId, reqCache = new Map()) {
+    if (!fabricJson || typeof fabricJson !== 'object') return fabricJson;
+
+    // Fast-path: skip entirely if no base64 present
+    const raw = JSON.stringify(fabricJson);
+    if (!raw.includes('data:') && !/\"src\"\s*:\s*\"[^h]/.test(raw)) return fabricJson;
+
+    // Deep-clone so we never mutate the caller's data
+    const fj = JSON.parse(raw);
+
+    const isBase64Src = (src) =>
+        src && typeof src === 'string' &&
+        !src.startsWith('http://') && !src.startsWith('https://') &&
+        (src.startsWith('data:') || src.length > 256);
+
+    const uploadSrc = async (src, suffix) => {
+        if (!isBase64Src(src)) return src;
+
+        // Dedup within this request using first 512 chars as fingerprint
+        const fp = src.slice(0, 512);
+        if (reqCache.has(fp)) return reqCache.get(fp);
+
+        try {
+            const uri = src.startsWith('data:') ? src : `data:image/png;base64,${src}`;
+            const result = await cloudinary.uploader.upload(uri, {
+                folder: `editor-images/${projectId}`,
+                public_id: `${pageId}_${suffix}`,
+                resource_type: 'image',
+                overwrite: true,
+                timeout: 120_000,
+            });
+            reqCache.set(fp, result.secure_url);
+            return result.secure_url;
+        } catch (err) {
+            console.error(`[sanitizeFabricJson] Cloudinary upload failed (${suffix}):`, err.message);
+            throw err;
+        }
+    };
+
+    // Sanitize objects array — sequentially to avoid concurrent Cloudinary flood
+    if (Array.isArray(fj.objects)) {
+        for (let idx = 0; idx < fj.objects.length; idx++) {
+            const obj = fj.objects[idx];
+            if (!obj) continue;
+            if (obj.type === 'image' && isBase64Src(obj.src)) {
+                obj.src = await uploadSrc(obj.src, `obj${idx}`);
+            }
+            if (obj.type === 'group' && Array.isArray(obj.objects)) {
+                for (let cidx = 0; cidx < obj.objects.length; cidx++) {
+                    const child = obj.objects[cidx];
+                    if (child?.type === 'image' && isBase64Src(child.src)) {
+                        child.src = await uploadSrc(child.src, `obj${idx}_${cidx}`);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sanitize backgroundImage
+    if (fj.backgroundImage && isBase64Src(fj.backgroundImage.src)) {
+        fj.backgroundImage.src = await uploadSrc(fj.backgroundImage.src, 'bg');
+    }
+
+    return fj;
+}
 
 const router = Router();
 
@@ -381,7 +481,7 @@ function buildIllustrationReview(project) {
 
     // chapter-book → use whichever source has more chapters so all slots are shown
     // arts.chapters contains illustrationMoments; arts.humanized contains polished text
-    const rawChapters       = normArr(arts.chapters);
+    const rawChapters = normArr(arts.chapters);
     const humanizedChapters = normArr(arts.humanized);
     // Prefer the source with more chapters to avoid truncating the illustration list
     const sourceChapters = rawChapters.length >= humanizedChapters.length
@@ -1983,6 +2083,40 @@ router.post('/:id/review/cover/:side/approve', async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EDITOR IMAGE UPLOAD — upload a single canvas image to Cloudinary
+// Called by the frontend BEFORE saving pages so fabricJson never contains base64.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post('/:id/editor/upload-image', async (req, res, next) => {
+    try {
+        const project = await Project.findById(req.params.id);
+        if (!project) throw new NotFoundError('Project not found');
+        if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+
+        const { dataUri, suffix = 'img' } = req.body ?? {};
+        if (!dataUri || typeof dataUri !== 'string') {
+            return res.status(400).json({ error: 'dataUri required' });
+        }
+        // Already a remote URL — nothing to upload, return immediately
+        if (dataUri.startsWith('http://') || dataUri.startsWith('https://')) {
+            return res.json({ url: dataUri });
+        }
+
+        const uri = dataUri.startsWith('data:') ? dataUri : `data:image/png;base64,${dataUri}`;
+        const result = await cloudinary.uploader.upload(uri, {
+            folder: `editor-images/${project._id}`,
+            public_id: `${suffix}_${Date.now()}`,
+            resource_type: 'image',
+            overwrite: false,
+            timeout: 120_000,   // 2 min — never let Cloudinary time out (499)
+        });
+        res.json({ url: result.secure_url });
+    } catch (e) {
+        next(e);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EDITOR PAGES  — save / load fabricJson + thumbnail per page
 // These endpoints allow the book editor to persist canvas state to MongoDB
 // so it survives page refreshes and reflects in the preview component.
@@ -1992,6 +2126,19 @@ router.post('/:id/review/cover/:side/approve', async (req, res, next) => {
  * GET /api/projects/:id/editor/pages
  * Returns the saved editorPages array (or [] if never saved).
  */
+// router.get('/:id/editor/pages', async (req, res, next) => {
+//     try {
+//         const project = await Project.findById(req.params.id);
+//         if (!project) throw new NotFoundError('Project not found');
+//         if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+
+//         const pages = normArr(project.artifacts?.editorPages ?? []);
+//         res.json({ pages });
+//     } catch (e) {
+//         next(e);
+//     }
+// });
+
 router.get('/:id/editor/pages', async (req, res, next) => {
     try {
         const project = await Project.findById(req.params.id);
@@ -1999,7 +2146,22 @@ router.get('/:id/editor/pages', async (req, res, next) => {
         if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
 
         const pages = normArr(project.artifacts?.editorPages ?? []);
-        res.json({ pages });
+
+        // Re-attach fabricJson from PageContent collection
+        const contents = await PageContent.find({
+            projectId: project._id,
+            pageId: { $in: pages.map(p => p.id) },
+        }).lean();
+
+        const contentMap = {};
+        contents.forEach(c => { contentMap[c.pageId] = c.fabricJson; });
+
+        const full = pages.map(p => ({
+            ...p,
+            fabricJson: contentMap[p.id] ?? null,
+        }));
+
+        res.json({ pages: full });
     } catch (e) {
         next(e);
     }
@@ -2013,6 +2175,9 @@ router.get('/:id/editor/pages', async (req, res, next) => {
  * Partial updates are fine — only fields present in each page object are
  * overwritten so unrelated pages are never clobbered.
  */
+
+// Updated PATCH route
+
 router.patch('/:id/editor/pages', async (req, res, next) => {
     try {
         const project = await Project.findById(req.params.id);
@@ -2024,26 +2189,70 @@ router.patch('/:id/editor/pages', async (req, res, next) => {
             return res.status(400).json({ error: 'pages array required' });
         }
 
-        // Build a map of existing saved pages keyed by id
         const existing = normArr(project.artifacts?.editorPages ?? []);
         const byId = {};
         existing.forEach(p => { if (p?.id) byId[p.id] = p; });
 
-        // Merge incoming pages — only update the fields the editor sends
-        incoming.forEach(p => {
+        const processed = await Promise.all(incoming.map(async p => {
+            if (!p?.id) return p;
+            let thumbnail = p.thumbnail;
+            if (thumbnail && typeof thumbnail === 'string' && !thumbnail.startsWith('http')) {
+                try {
+                    thumbnail = await uploadThumbnailToCloudinary(thumbnail, project._id.toString(), p.id);
+                } catch (uploadErr) {
+                    console.error(`[editor/pages] Cloudinary upload failed for page ${p.id}:`, uploadErr.message);
+                    thumbnail = undefined;
+                }
+            }
+            return { ...p, thumbnail };
+        }));
+
+        // Sanitize fabricJson — upload any embedded base64 images to Cloudinary.
+        // A shared reqCache deduplicates the same image across multiple pages in
+        // one request. Pages are processed sequentially to avoid concurrent flood.
+        const reqCache = new Map();
+        const sanitized = [];
+        for (const p of processed) {
+            if (!p?.id || p.fabricJson === undefined) { sanitized.push(p); continue; }
+            const cleanFabric = await sanitizeFabricJson(
+                p.fabricJson,
+                project._id.toString(),
+                p.id,
+                reqCache,
+            );
+            sanitized.push({ ...p, fabricJson: cleanFabric });
+        }
+
+        // Save fabricJson separately — NEVER into the Project document
+        const fabricOps = sanitized
+            .filter(p => p?.id && p.fabricJson !== undefined)
+            .map(p => ({
+                updateOne: {
+                    filter: { projectId: project._id, pageId: p.id },
+                    update: { $set: { fabricJson: p.fabricJson, savedAt: new Date() } },
+                    upsert: true,
+                },
+            }));
+
+        if (fabricOps.length > 0) {
+            await PageContent.bulkWrite(fabricOps);
+        }
+
+        // Merge metadata only (no fabricJson) into Project document
+        processed.forEach(p => {
             if (!p?.id) return;
             const prev = byId[p.id] ?? { id: p.id };
+            const { fabricJson: _, ...rest } = p; // strip fabricJson
             byId[p.id] = {
                 ...prev,
-                ...(p.fabricJson  !== undefined && { fabricJson:  p.fabricJson }),
-                ...(p.thumbnail   !== undefined && { thumbnail:   p.thumbnail }),
-                ...(p.text        !== undefined && { text:        p.text }),
-                ...(p.title       !== undefined && { title:       p.title }),
+                ...(rest.thumbnail !== undefined && { thumbnail: rest.thumbnail }),
+                ...(rest.text !== undefined && { text: rest.text }),
+                ...(rest.title !== undefined && { title: rest.title }),
+                ...(rest.imageUrl !== undefined && rest.imageUrl && { imageUrl: rest.imageUrl }),
                 savedAt: new Date().toISOString(),
             };
         });
 
-        // Persist — use $set so Mongoose strict:false lets us write to artifacts
         await Project.updateOne(
             { _id: project._id },
             { $set: { 'artifacts.editorPages': Object.values(byId) } },
@@ -2054,5 +2263,62 @@ router.patch('/:id/editor/pages', async (req, res, next) => {
         next(e);
     }
 });
+
+// router.patch('/:id/editor/pages', async (req, res, next) => {
+//     try {
+//         const project = await Project.findById(req.params.id);
+//         if (!project) throw new NotFoundError('Project not found');
+//         if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+
+//         const incoming = req.body?.pages;
+//         if (!Array.isArray(incoming) || incoming.length === 0) {
+//             return res.status(400).json({ error: 'pages array required' });
+//         }
+
+//         // Build a map of existing saved pages keyed by id
+//         const existing = normArr(project.artifacts?.editorPages ?? []);
+//         const byId = {};
+//         existing.forEach(p => { if (p?.id) byId[p.id] = p; });
+
+//         // Upload base64 thumbnails to Cloudinary — store only URLs in MongoDB
+//         const processed = await Promise.all(incoming.map(async p => {
+//             if (!p?.id) return p;
+//             let thumbnail = p.thumbnail;
+//             if (thumbnail && typeof thumbnail === 'string' && !thumbnail.startsWith('http')) {
+//                 try {
+//                     thumbnail = await uploadThumbnailToCloudinary(thumbnail, project._id.toString(), p.id);
+//                 } catch (uploadErr) {
+//                     console.error(`[editor/pages] Cloudinary upload failed for page ${p.id}:`, uploadErr.message);
+//                     thumbnail = undefined; // skip storing on failure rather than crashing
+//                 }
+//             }
+//             return { ...p, thumbnail };
+//         }));
+
+//         // Merge incoming pages — only update the fields the editor sends
+//         processed.forEach(p => {
+//             if (!p?.id) return;
+//             const prev = byId[p.id] ?? { id: p.id };
+//             byId[p.id] = {
+//                 ...prev,
+//                 ...(p.fabricJson  !== undefined && { fabricJson:  p.fabricJson }),
+//                 ...(p.thumbnail   !== undefined && { thumbnail:   p.thumbnail }),
+//                 ...(p.text        !== undefined && { text:        p.text }),
+//                 ...(p.title       !== undefined && { title:       p.title }),
+//                 savedAt: new Date().toISOString(),
+//             };
+//         });
+
+//         // Persist — use $set so Mongoose strict:false lets us write to artifacts
+//         await Project.updateOne(
+//             { _id: project._id },
+//             { $set: { 'artifacts.editorPages': Object.values(byId) } },
+//         );
+
+//         res.json({ saved: incoming.length, total: Object.keys(byId).length });
+//     } catch (e) {
+//         next(e);
+//     }
+// });
 
 export default router;

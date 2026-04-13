@@ -1,36 +1,45 @@
 // server/lib/puppeteerPdf.js
-// Renders an array of HTML page strings to JPEG screenshots via Puppeteer,
-// then assembles them into a single PDF using pdf-lib.
+// Renders an array of HTML page strings to a single PDF using Puppeteer's
+// native tab.pdf() — bypasses pdf-lib embedJpg entirely, so the 17MB offset
+// overflow can never occur regardless of resolution or page count.
 //
-// FIXES:
-// 7. Font preloading — reads data-fonts from body and calls document.fonts.load()
-//    for each required font before screenshotting.
-// +  Paint delay increased to 800ms for font rasterization time.
-// +  waitUntil: 'load' — waits for ALL resources to finish or error.
-// +  Single browser instance reused across all pages (faster).
-// +  Force-reload broken images after setContent.
+// pdf-lib is ONLY used for the final merge step (adds ~100 bytes/page, safe).
+//
+// FIXES vs previous version:
+// ✅ No JPEG screenshot → no pdf-lib offset overflow
+// ✅ Full resolution preserved (Chrome renders vector, not pixel JPEG)
+// ✅ Text is selectable/searchable in the output PDF
+// ✅ Fonts rendered natively by Chrome (no rasterization artifacts)
+// ✅ Single browser instance reused across all pages
+// ✅ Font preloading + broken image repair preserved from previous version
 
 import puppeteer from 'puppeteer';
 import { PDFDocument } from 'pdf-lib';
 
-const VIEWPORT_W = 750;
-const VIEWPORT_H = 1000;
-const SCALE      = 2;
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-const PDF_W_PT = 6 * 72;   // 432 pt
-const PDF_H_PT = 8 * 72;   // 576 pt
+const VIEWPORT_W = 576;   // 6in × 96dpi — matches tab.pdf() paper width in CSS pixels
+const VIEWPORT_H = 768; // Must match renderPageHtml.js PAGE_H — 250 DPI at 8" print
+// deviceScaleFactor is omitted — it has no effect on tab.pdf() quality,
+// only on tab.screenshot(). Setting it to 1 (default) avoids double memory use.
+
+const PDF_W_IN = 6;        // 6 inches = 432pt
+const PDF_H_IN = 8;        // 8 inches = 576pt
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// All font families the editor can use — used for explicit font loading
-const ALL_EDITOR_FONTS = [
-  'Fredoka One', 'Baloo 2', 'Nunito', 'Poppins', 'Playfair Display',
-  'Raleway', 'Amiri', 'Cairo', 'Merriweather', 'Lato', 'Oswald',
-  'Montserrat', 'Dancing Script', 'Pacifico', 'Cinzel',
-];
+// ─── Main export ──────────────────────────────────────────────────────────────
 
+/**
+ * Converts an array of HTML strings (one per page) into a single multi-page PDF buffer.
+ *
+ * @param {string[]} htmlPages    - Array of self-contained HTML strings from renderPageHtml.js
+ * @param {string}   _templateId  - Unused here; kept for API compatibility
+ * @returns {Promise<Buffer>}     - Raw PDF bytes ready to stream/save
+ */
 export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
-  // ── Launch ONE browser for all pages ─────────────────────────────────────
+
+  // ── Launch ONE browser for all pages ───────────────────────────────────────
   const browser = await puppeteer.launch({
     headless: 'new',
     args: [
@@ -40,113 +49,277 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
       '--disable-gpu',
       '--font-render-hinting=none',
       '--force-color-profile=srgb',
-      '--disable-web-security',
+      '--disable-web-security',           // Allow Cloudinary cross-origin images
       '--allow-running-insecure-content',
       '--ignore-certificate-errors',
     ],
   });
 
-  const jpegBuffers = [];
+  // Collect one single-page PDF buffer per HTML page
+  const pdfChunks = [];
 
   try {
     const tab = await browser.newPage();
 
     // Allow cross-origin Cloudinary image requests
-    await tab.setExtraHTTPHeaders({ 'Accept': 'image/*, */*' });
+    await tab.setExtraHTTPHeaders({ Accept: 'image/*, */*' });
 
     await tab.setViewport({
-      width:             VIEWPORT_W,
-      height:            VIEWPORT_H,
-      deviceScaleFactor: SCALE,
+      width: VIEWPORT_W,
+      height: VIEWPORT_H,
+      deviceScaleFactor: 1,  // no effect on PDF quality, keep at 1 to avoid excess memory
     });
 
     tab.setDefaultNavigationTimeout(30_000);
 
+    // ── Per-page render loop ─────────────────────────────────────────────────
     for (let i = 0; i < htmlPages.length; i++) {
       const html = htmlPages[i];
 
-      // 'load' fires once when ALL resources have finished or errored
-      // (unlike networkidle2 which resets on every new request)
-      await tab.setContent(html, {
-        waitUntil: 'load',
-        timeout:   30_000,
-      });
+      try {
+        await tab.setContent(html, {
+          waitUntil: 'load',
+          timeout: 30_000,
+        });
 
-      // ── FIX 7: Explicit font loading + broken image repair ─────────────
-      await Promise.race([
-        tab.evaluate(async () => {
-          // Read which fonts this page actually needs from data-fonts attribute
-          const fontsAttr = document.body.getAttribute('data-fonts') || '';
-          const pageFonts = fontsAttr
-            .split(',')
-            .map(f => f.trim())
-            .filter(Boolean);
+        await Promise.race([
+          tab.evaluate(async () => {
+            const fontsAttr = document.body.getAttribute('data-fonts') || '';
+            const pageFonts = fontsAttr
+              .split(',')
+              .map((f) => f.trim())
+              .filter(Boolean);
 
-          // Weights and styles to preload for each font
-          const WEIGHTS  = ['400', '700'];
-          const STYLES   = ['normal', 'italic'];
+            const WEIGHTS = ['400', '700'];
+            const STYLES = ['normal', 'italic'];
 
-          // Force-load each font variant explicitly
-          const fontLoads = [];
-          for (const family of pageFonts) {
-            for (const weight of WEIGHTS) {
-              for (const style of STYLES) {
-                const spec = `${style} ${weight} 16px "${family}"`;
-                fontLoads.push(
-                  document.fonts.load(spec).catch(() => null)
-                );
+            const fontLoads = [];
+            for (const family of pageFonts) {
+              for (const weight of WEIGHTS) {
+                for (const style of STYLES) {
+                  const spec = `${style} ${weight} 16px "${family}"`;
+                  fontLoads.push(document.fonts.load(spec).catch(() => null));
+                }
               }
             }
-          }
 
-          // Repair any broken images (CORS timing, CDN cold cache)
-          const imageRepairs = Array.from(document.images)
-            .filter(img => !img.complete || img.naturalWidth === 0)
-            .map(img => new Promise(resolve => {
-              img.addEventListener('load',  resolve, { once: true });
-              img.addEventListener('error', resolve, { once: true });
-              const src = img.src;
-              img.src = '';
-              img.src = src;
-            }));
+            const imageRepairs = Array.from(document.images)
+              .filter((img) => !img.complete || img.naturalWidth === 0)
+              .map(
+                (img) =>
+                  new Promise((resolve) => {
+                    img.addEventListener('load', resolve, { once: true });
+                    img.addEventListener('error', resolve, { once: true });
+                    const src = img.src;
+                    img.src = '';
+                    img.src = src;
+                  })
+              );
 
-          await Promise.all([
-            ...fontLoads,
-            ...imageRepairs,
-            document.fonts.ready,
-          ]);
-        }),
-        delay(12_000), // hard ceiling — never wait more than 12s per page
-      ]);
+            await Promise.all([
+              ...fontLoads,
+              ...imageRepairs,
+              document.fonts.ready,
+            ]);
+          }),
+          delay(10000),
+        ]);
 
-      // FIX 7 — Extra paint delay for font rasterization (increased from 400ms)
-      await delay(800);
+        await delay(500);
 
-      const buffer = await tab.screenshot({
-        type:           'jpeg',
-        quality:        95,
-        clip: { x: 0, y: 0, width: VIEWPORT_W, height: VIEWPORT_H },
-        omitBackground: false,
-      });
+        const pdfBuffer = await tab.pdf({
+          width: `${PDF_W_IN}in`,
+          height: `${PDF_H_IN}in`,
+          printBackground: true,
+          margin: { top: 0, bottom: 0, left: 0, right: 0 },
+          pageRanges: '1',
+        });
 
-      jpegBuffers.push(buffer);
+        pdfChunks.push(Buffer.from(pdfBuffer));
+        console.log(
+          `[puppeteerPdf] Page ${i + 1}/${htmlPages.length} rendered (${(
+            pdfBuffer.byteLength / 1024
+          ).toFixed(1)} KB)`
+        );
+      } catch (error) {
+        console.error(`[puppeteerPdf] Failed on page ${i + 1}:`, error);
+        throw error;
+      }
     }
+
   } finally {
+    // Always close the browser, even if a page throws
     await browser.close();
   }
 
-  // ── Assemble PDF ──────────────────────────────────────────────────────────
-  const pdfDoc = await PDFDocument.create();
+  // ── Merge all single-page PDFs into one document ──────────────────────────
+  // pdf-lib is ONLY used here for page-copying, which adds a tiny fixed amount
+  // of bytes per page — the offset overflow that affected embedJpg cannot occur.
+  console.log(`[puppeteerPdf] Merging ${pdfChunks.length} pages into final PDF…`);
 
-  for (const jpegBuf of jpegBuffers) {
-    const jpegImage = await pdfDoc.embedJpg(jpegBuf);
-    const pdfPage   = pdfDoc.addPage([PDF_W_PT, PDF_H_PT]);
-    pdfPage.drawImage(jpegImage, {
-      x: 0, y: 0,
-      width:  PDF_W_PT,
-      height: PDF_H_PT,
-    });
+  const merged = await PDFDocument.create();
+
+  for (const chunk of pdfChunks) {
+    const src = await PDFDocument.load(chunk);
+    const [page] = await merged.copyPages(src, [0]);
+    merged.addPage(page);
   }
 
-  return Buffer.from(await pdfDoc.save());
+  const finalBytes = await merged.save();
+  console.log(`[puppeteerPdf] Final PDF: ${(finalBytes.byteLength / 1024).toFixed(1)} KB, ${pdfChunks.length} pages`);
+
+  return Buffer.from(finalBytes);
 }
+
+// // server/lib/puppeteerPdf.js
+// // Renders an array of HTML page strings to JPEG screenshots via Puppeteer,
+// // then assembles them into a single PDF using pdf-lib.
+// //
+// // FIXES:
+// // 7. Font preloading — reads data-fonts from body and calls document.fonts.load()
+// //    for each required font before screenshotting.
+// // +  Paint delay increased to 800ms for font rasterization time.
+// // +  waitUntil: 'load' — waits for ALL resources to finish or error.
+// // +  Single browser instance reused across all pages (faster).
+// // +  Force-reload broken images after setContent.
+
+// import puppeteer from 'puppeteer';
+// import { PDFDocument } from 'pdf-lib';
+
+// const VIEWPORT_W = 750;
+// const VIEWPORT_H = 1000;
+// const SCALE      = 2;
+
+// const PDF_W_PT = 6 * 72;   // 432 pt
+// const PDF_H_PT = 8 * 72;   // 576 pt
+
+// const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// // All font families the editor can use — used for explicit font loading
+// const ALL_EDITOR_FONTS = [
+//   'Fredoka One', 'Baloo 2', 'Nunito', 'Poppins', 'Playfair Display',
+//   'Raleway', 'Amiri', 'Cairo', 'Merriweather', 'Lato', 'Oswald',
+//   'Montserrat', 'Dancing Script', 'Pacifico', 'Cinzel',
+// ];
+
+// export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
+//   // ── Launch ONE browser for all pages ─────────────────────────────────────
+//   const browser = await puppeteer.launch({
+//     headless: 'new',
+//     args: [
+//       '--no-sandbox',
+//       '--disable-setuid-sandbox',
+//       '--disable-dev-shm-usage',
+//       '--disable-gpu',
+//       '--font-render-hinting=none',
+//       '--force-color-profile=srgb',
+//       '--disable-web-security',
+//       '--allow-running-insecure-content',
+//       '--ignore-certificate-errors',
+//     ],
+//   });
+
+//   const jpegBuffers = [];
+
+//   try {
+//     const tab = await browser.newPage();
+
+//     // Allow cross-origin Cloudinary image requests
+//     await tab.setExtraHTTPHeaders({ 'Accept': 'image/*, */*' });
+
+//     await tab.setViewport({
+//       width:             VIEWPORT_W,
+//       height:            VIEWPORT_H,
+//       deviceScaleFactor: SCALE,
+//     });
+
+//     tab.setDefaultNavigationTimeout(30_000);
+
+//     for (let i = 0; i < htmlPages.length; i++) {
+//       const html = htmlPages[i];
+
+//       // 'load' fires once when ALL resources have finished or errored
+//       // (unlike networkidle2 which resets on every new request)
+//       await tab.setContent(html, {
+//         waitUntil: 'load',
+//         timeout:   30_000,
+//       });
+
+//       // ── FIX 7: Explicit font loading + broken image repair ─────────────
+//       await Promise.race([
+//         tab.evaluate(async () => {
+//           // Read which fonts this page actually needs from data-fonts attribute
+//           const fontsAttr = document.body.getAttribute('data-fonts') || '';
+//           const pageFonts = fontsAttr
+//             .split(',')
+//             .map(f => f.trim())
+//             .filter(Boolean);
+
+//           // Weights and styles to preload for each font
+//           const WEIGHTS  = ['400', '700'];
+//           const STYLES   = ['normal', 'italic'];
+
+//           // Force-load each font variant explicitly
+//           const fontLoads = [];
+//           for (const family of pageFonts) {
+//             for (const weight of WEIGHTS) {
+//               for (const style of STYLES) {
+//                 const spec = `${style} ${weight} 16px "${family}"`;
+//                 fontLoads.push(
+//                   document.fonts.load(spec).catch(() => null)
+//                 );
+//               }
+//             }
+//           }
+
+//           // Repair any broken images (CORS timing, CDN cold cache)
+//           const imageRepairs = Array.from(document.images)
+//             .filter(img => !img.complete || img.naturalWidth === 0)
+//             .map(img => new Promise(resolve => {
+//               img.addEventListener('load',  resolve, { once: true });
+//               img.addEventListener('error', resolve, { once: true });
+//               const src = img.src;
+//               img.src = '';
+//               img.src = src;
+//             }));
+
+//           await Promise.all([
+//             ...fontLoads,
+//             ...imageRepairs,
+//             document.fonts.ready,
+//           ]);
+//         }),
+//         delay(12_000), // hard ceiling — never wait more than 12s per page
+//       ]);
+
+//       // FIX 7 — Extra paint delay for font rasterization (increased from 400ms)
+//       await delay(800);
+
+//       const buffer = await tab.screenshot({
+//         type:           'jpeg',
+//         quality:        95,
+//         clip: { x: 0, y: 0, width: VIEWPORT_W, height: VIEWPORT_H },
+//         omitBackground: false,
+//       });
+
+//       jpegBuffers.push(buffer);
+//     }
+//   } finally {
+//     await browser.close();
+//   }
+
+//   // ── Assemble PDF ──────────────────────────────────────────────────────────
+//   const pdfDoc = await PDFDocument.create();
+
+//   for (const jpegBuf of jpegBuffers) {
+//     const jpegImage = await pdfDoc.embedJpg(jpegBuf);
+//     const pdfPage   = pdfDoc.addPage([PDF_W_PT, PDF_H_PT]);
+//     pdfPage.drawImage(jpegImage, {
+//       x: 0, y: 0,
+//       width:  PDF_W_PT,
+//       height: PDF_H_PT,
+//     });
+//   }
+
+//   return Buffer.from(await pdfDoc.save());
+// }

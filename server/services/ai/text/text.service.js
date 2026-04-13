@@ -895,6 +895,7 @@ function buildKbBlock(project, kb, characters = []) {
     if (rules.frontMatter?.length) lines.push(`Front Matter: ${rules.frontMatter.join(', ')}`);
     if (rules.endMatter?.length) lines.push(`End Matter: ${rules.endMatter.join(', ')}`);
   } else if (rules.mode === 'picture-book') {
+    if (rules.maxWordsPerSpread) lines.push(`Max Words Per Spread: ${rules.maxWordsPerSpread}`);
     if (rules.wordCountTarget) lines.push(`Total Word Count: ${rules.wordCountTarget}`);
     if (rules.pageFlow?.length) lines.push(`Page Flow: ${rules.pageFlow.join(' → ')}`);
     if (rules.segmentCount) lines.push(`Segment Count: ${rules.segmentCount}`);

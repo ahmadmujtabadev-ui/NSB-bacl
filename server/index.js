@@ -39,7 +39,9 @@ app.use(morgan(config.isDev ? 'dev' : 'combined'));
 // ─── Body Parsing ────────────────────────────────────────────────────────────
 // Stripe webhooks need raw body — mount BEFORE express.json()
 app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
-app.use(express.json({ limit: '5mb' }));
+// 50mb: individual image uploads (upload-image) can be up to ~10MB base64 per image.
+// The editor/pages PATCH only carries URLs after sanitization so it stays tiny.
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Public Routes ───────────────────────────────────────────────────────────

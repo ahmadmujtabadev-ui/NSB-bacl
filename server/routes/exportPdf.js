@@ -11,6 +11,7 @@
 
 import { Router } from 'express';
 import { Project } from '../models/Project.js';
+import PageContent from '../models/PageContent.js';
 import { NotFoundError, ForbiddenError } from '../errors.js';
 import { renderPageHtml, PDF_TEMPLATES } from '../lib/renderPageHtml.js';
 import { renderHtmlPagesToPdf } from '../lib/puppeteerPdf.js';
@@ -76,6 +77,75 @@ function sortPagesCanonically(pages) {
   });
 }
 
+// ─── Illustration URL helpers ─────────────────────────────────────────────────
+
+/**
+ * Pick the best image URL from a review node or raw illustration object.
+ * Checks selected variant first, falls back to imageUrl field.
+ */
+function pickUrl(node) {
+  if (!node) return null;
+  const cur = node.current ?? node;
+  const variants = normArr(cur.variants ?? cur.frontVariants ?? []);
+  const selIdx = cur.selectedVariantIndex ?? cur.frontSelectedVariantIndex ?? 0;
+  return variants[selIdx]?.imageUrl || cur.imageUrl || cur.frontUrl || null;
+}
+
+/**
+ * Build a pageId → imageUrl map from project artifacts.
+ * Reads the exact paths where cover + illustration URLs are stored so it
+ * works for ANY project regardless of when it was last saved.
+ *
+ * Data paths (as used by project-review.js):
+ *   Cover front  → project.artifacts.cover.frontUrl / .frontVariants / .frontSelectedVariantIndex
+ *   Cover back   → project.artifacts.cover.backUrl  / .backVariants  / .backSelectedVariantIndex
+ *   Illustrations→ project.artifacts.review.illustrations[i].key + .current.imageUrl/.variants
+ *   Fallback ill → project.artifacts.spreadIllustrations[i].imageUrl (spreads-only mode)
+ */
+function buildImageUrlMap(project) {
+  const map  = {};
+  const arts = project.artifacts || {};
+
+  // ── Cover ───────────────────────────────────────────────────────────────────
+  const cov = arts.cover || {};
+
+  const frontVariants = normArr(cov.frontVariants ?? []);
+  const frontSelIdx   = cov.frontSelectedVariantIndex ?? 0;
+  const frontUrl      = frontVariants[frontSelIdx]?.imageUrl || cov.frontUrl || null;
+  if (frontUrl) map['cover-front'] = frontUrl;
+
+  const backVariants = normArr(cov.backVariants ?? []);
+  const backSelIdx   = cov.backSelectedVariantIndex ?? 0;
+  const backUrl      = backVariants[backSelIdx]?.imageUrl || cov.backUrl || null;
+  if (backUrl) map['cover-back'] = backUrl;
+
+  // ── Review illustrations (primary source — already built by syncReviewFromArtifacts) ──
+  const reviewIlls = normArr(arts.review?.illustrations ?? []);
+  reviewIlls.forEach((ill) => {
+    const url = pickUrl(ill);
+    if (!url || !ill.key) return;
+
+    if (ill.sourceType === 'spread') {
+      map[`spread-${ill.key}`] = url;
+    } else if (ill.sourceType === 'chapter-moment') {
+      const ch = ill.chapterIndex ?? 0;
+      const si = ill.spreadIndex  ?? 0;
+      if (si === 0) map[`chapter-${ch}-opener`]   = url;
+      map[`chapter-${ch}-moment-${si}`] = url;
+    }
+  });
+
+  // ── Fallback: raw spreadIllustrations array (spreads-only mode) ─────────────
+  if (reviewIlls.length === 0) {
+    normArr(arts.spreadIllustrations ?? []).forEach((ill, si) => {
+      const url = pickUrl(ill);
+      if (url) map[`spread-s${si}`] = url;
+    });
+  }
+
+  return map;
+}
+
 // ─── Template list ────────────────────────────────────────────────────────────
 
 router.get('/:projectId/export/templates', (req, res) => {
@@ -92,40 +162,40 @@ router.get('/:projectId/export/templates', (req, res) => {
 
 router.get('/:projectId/export/pdf', async (req, res, next) => {
   console.log('[exportPdf] hit — projectId:', req.params.projectId, 'user:', req.user?._id);
+
   try {
     const { projectId } = req.params;
-
     const rawTemplate = req.query.template;
-    const templateId  = VALID_TEMPLATES.has(rawTemplate) ? rawTemplate : 'classic';
+    const templateId = VALID_TEMPLATES.has(rawTemplate) ? rawTemplate : 'classic';
+
     console.log('[exportPdf] template:', templateId);
 
-    // ── 1. Fetch & authorise ──────────────────────────────────────────────
     const project = await Project.findById(projectId).lean();
     if (!project) throw new NotFoundError('Project not found');
-    if (project.userId.toString() !== req.user._id.toString()) throw new ForbiddenError();
+    if (project.userId.toString() !== req.user._id.toString()) {
+      throw new ForbiddenError();
+    }
 
-    // ── 2. Load + sort editor pages into canonical book order ─────────────
-    const rawPages    = normArr(project.artifacts?.editorPages ?? []);
-    const editorPages = sortPagesCanonically(rawPages);
+    const rawPages = normArr(project.artifacts?.editorPages ?? []);
+    const sortedPages = sortPagesCanonically(rawPages);
 
-    // ── Full page manifest (one line per page for easy diagnosis) ─────────
-    console.log(`[exportPdf] ── Page manifest (${editorPages.length} pages) ──`);
-    editorPages.forEach((p, i) => {
-      const dbIdx  = rawPages.findIndex(r => r.id === p.id);
-      const moved  = dbIdx !== i ? ` ← was DB[${dbIdx + 1}]` : '';
-      const fj     = p.fabricJson ?? {};
-      const parsed = typeof fj === 'string' ? (() => { try { return JSON.parse(fj); } catch { return {}; } })() : fj;
-      const objCount  = Array.isArray(parsed.objects) ? parsed.objects.length : 0;
-      const hasBgImg  = !!(parsed.backgroundImage?.src);
-      const hasBgClr  = !!parsed.background;
-      const hasThumb  = !!p.thumbnail;
-      const isEmpty   = objCount === 0 && !hasBgImg && !hasBgClr;
-      const status    = isEmpty
-        ? (hasThumb ? 'THUMBNAIL'   : 'PLACEHOLDER')
-        : `objects:${objCount}${hasBgImg ? '+bgImg' : ''}${hasBgClr ? '+bgClr' : ''}`;
-      console.log(`  PDF[${String(i + 1).padStart(2, '0')}] "${p.id}"${moved} → ${status}`);
+    const pageContents = await PageContent.find({
+      projectId: project._id,
+      pageId: { $in: sortedPages.map((p) => p.id) },
+    }).lean();
+
+    const contentMap = {};
+    pageContents.forEach((c) => {
+      contentMap[c.pageId] = c.fabricJson;
     });
-    console.log('[exportPdf] ─────────────────────────────────────────────────');
+
+    const imageUrlMap = buildImageUrlMap(project);
+
+    const editorPages = sortedPages.map((p) => ({
+      ...p,
+      fabricJson: contentMap[p.id] ?? null,
+      imageUrl: p.imageUrl || imageUrlMap[p.id] || null,
+    }));
 
     if (editorPages.length === 0) {
       return res.status(422).json({
@@ -133,69 +203,69 @@ router.get('/:projectId/export/pdf', async (req, res, next) => {
       });
     }
 
-    // ── 3a. Build per-chapter illustration URL map ────────────────────────
-    // For layout templates (stacked / sidebyside) text pages need the chapter's
-    // illustration.  Extract the primary image URL from each chapter's
-    // opener → scene → moment page (first found wins) and store it keyed by
-    // chapter index so we can inject it into text pages below.
-    const chapterImageMap = {};  // chN (number) → imageUrl (string)
+    const chapterImageMap = {};
 
     editorPages.forEach((p) => {
       const m = (p.id ?? '').match(/^chapter-(\d+)-(opener|scene|moment)/i);
       if (!m) return;
+
       const chN = parseInt(m[1], 10);
-      if (chapterImageMap[chN]) return; // opener already wins over scene/moment
+      if (chapterImageMap[chN]) return;
 
       const fj = (() => {
         const raw = p.fabricJson;
         if (!raw) return {};
-        try { return typeof raw === 'string' ? JSON.parse(raw) : raw; }
-        catch { return {}; }
+        try {
+          return typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch {
+          return {};
+        }
       })();
 
       const url =
         fj.backgroundImage?.src ||
-        (Array.isArray(fj.objects) ? fj.objects.find(o => o?.type === 'image' && o.src)?.src : null) ||
+        (Array.isArray(fj.objects)
+          ? fj.objects.find((o) => o?.type === 'image' && o.src)?.src
+          : null) ||
         null;
 
       if (url) {
         chapterImageMap[chN] = url;
-        console.log(`[exportPdf] chapter ${chN} illustration: ${url.slice(0, 60)}…`);
       }
     });
 
-    // Attach chapterImageUrl to each text page so layout strategies can use it
     const pagesForRender = editorPages.map((p) => {
       const m = (p.id ?? '').match(/^chapter-(\d+)-text/i);
       if (!m) return p;
+
       const chN = parseInt(m[1], 10);
       const chapterImageUrl = chapterImageMap[chN] ?? null;
+
       return chapterImageUrl ? { ...p, chapterImageUrl } : p;
     });
 
-    // ── 3b. Render HTML per page ──────────────────────────────────────────
     const htmlPages = pagesForRender.map((page) => renderPageHtml(page, templateId));
 
-    // ── 4 & 5. Screenshot + assemble PDF ─────────────────────────────────
     console.log('[exportPdf] launching Puppeteer for', htmlPages.length, 'pages...');
     const pdfBuffer = await renderHtmlPagesToPdf(htmlPages, templateId);
     console.log('[exportPdf] PDF ready, bytes:', pdfBuffer.length);
 
-    // ── 6. Stream back ────────────────────────────────────────────────────
-    const safeName = (project.title || 'book')
-      .replace(/[^a-z0-9_\-\s]/gi, '')
-      .trim() || 'book';
+    const safeName =
+      (project.title || 'book').replace(/[^a-z0-9_\-\s]/gi, '').trim() || 'book';
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeName}-${templateId}.pdf"`);
-    res.setHeader('Content-Length', pdfBuffer.length);
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    res.send(pdfBuffer);
+    res.status(200);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${safeName}-${templateId}.pdf"`,
+      'Content-Length': pdfBuffer.length,
+      'Access-Control-Expose-Headers': 'Content-Disposition',
+      'Cache-Control': 'no-store',
+    });
 
+    return res.end(pdfBuffer);
   } catch (err) {
     console.error('[exportPdf] ERROR:', err.message, err.stack);
     next(err);
   }
 });
-
 export default router;
