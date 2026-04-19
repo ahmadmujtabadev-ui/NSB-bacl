@@ -13,8 +13,40 @@
 // ✅ Single browser instance reused across all pages
 // ✅ Font preloading + broken image repair preserved from previous version
 
-import puppeteer from 'puppeteer';
 import { PDFDocument } from 'pdf-lib';
+
+// On Vercel use the lightweight chromium layer; locally use the full puppeteer bundle
+const IS_VERCEL = !!process.env.VERCEL;
+
+async function launchBrowser() {
+  if (IS_VERCEL) {
+    const [{ default: chromium }, { default: puppeteerCore }] = await Promise.all([
+      import('@sparticuz/chromium'),
+      import('puppeteer-core'),
+    ]);
+    return puppeteerCore.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: process.env.CHROME_EXECUTABLE_PATH || await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+  }
+  const { default: puppeteer } = await import('puppeteer');
+  return puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--font-render-hinting=none',
+      '--force-color-profile=srgb',
+      '--disable-web-security',
+      '--allow-running-insecure-content',
+      '--ignore-certificate-errors',
+    ],
+  });
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -40,20 +72,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
 
   // ── Launch ONE browser for all pages ───────────────────────────────────────
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--font-render-hinting=none',
-      '--force-color-profile=srgb',
-      '--disable-web-security',           // Allow Cloudinary cross-origin images
-      '--allow-running-insecure-content',
-      '--ignore-certificate-errors',
-    ],
-  });
+  const browser = await launchBrowser();
 
   // Collect one single-page PDF buffer per HTML page
   const pdfChunks = [];

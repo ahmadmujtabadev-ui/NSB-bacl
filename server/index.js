@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'url';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -74,6 +75,8 @@ async function start() {
   });
 }
 
-start();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  start();
+}
 
 export default app;
