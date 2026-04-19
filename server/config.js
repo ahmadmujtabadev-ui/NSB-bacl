@@ -31,7 +31,7 @@ export const config = {
   },
 
   ai: {
-    textProvider: process.env.AI_TEXT_PROVIDER || 'mock',   // 'claude' | 'mock'
+    textProvider: process.env.AI_TEXT_PROVIDER || 'mock',   
     imageProvider: process.env.AI_IMAGE_PROVIDER || 'mock', // 'bfl' | 'replicate' | 'gemini' | 'mock'
     maxRetries: parseInt(process.env.AI_MAX_RETRIES || '2', 10),
     timeoutMs: parseInt(process.env.API_TIMEOUT_MS || '60000', 10),
