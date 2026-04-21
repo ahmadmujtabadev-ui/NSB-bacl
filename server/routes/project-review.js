@@ -30,7 +30,6 @@ async function uploadThumbnailToCloudinary(dataUri, projectId, pageId) {
         public_id: pageId,
         resource_type: 'image',
         overwrite: true,
-        timeout: 120_000,
     });
     return result.secure_url;
 }
@@ -76,7 +75,6 @@ async function sanitizeFabricJson(fabricJson, projectId, pageId, reqCache = new 
                 public_id: `${pageId}_${suffix}`,
                 resource_type: 'image',
                 overwrite: true,
-                timeout: 120_000,
             });
             reqCache.set(fp, result.secure_url);
             return result.secure_url;
@@ -2108,7 +2106,6 @@ router.post('/:id/editor/upload-image', async (req, res, next) => {
             public_id: `${suffix}_${Date.now()}`,
             resource_type: 'image',
             overwrite: false,
-            timeout: 120_000,   // 2 min — never let Cloudinary time out (499)
         });
         res.json({ url: result.secure_url });
     } catch (e) {

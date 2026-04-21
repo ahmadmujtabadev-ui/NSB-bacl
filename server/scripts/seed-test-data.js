@@ -1076,7 +1076,7 @@ async function main() {
   console.log('\n🌙  Crescent Academy & Sunshine Garden — Seed Script');
   console.log('───────────────────────────────────────────────────\n');
 
-  await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 8000 });
+  await mongoose.connect(MONGO_URI);
   console.log('✅  MongoDB connected\n');
 
   const { Universe, Character, KnowledgeBase } = await loadModels();

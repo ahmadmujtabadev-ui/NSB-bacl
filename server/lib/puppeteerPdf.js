@@ -89,7 +89,7 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
       deviceScaleFactor: 1,  // no effect on PDF quality, keep at 1 to avoid excess memory
     });
 
-    tab.setDefaultNavigationTimeout(30_000);
+    tab.setDefaultNavigationTimeout(0);
 
     // ── Per-page render loop ─────────────────────────────────────────────────
     for (let i = 0; i < htmlPages.length; i++) {
@@ -98,51 +98,48 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
       try {
         await tab.setContent(html, {
           waitUntil: 'load',
-          timeout: 30_000,
+          timeout: 0,
         });
 
-        await Promise.race([
-          tab.evaluate(async () => {
-            const fontsAttr = document.body.getAttribute('data-fonts') || '';
-            const pageFonts = fontsAttr
-              .split(',')
-              .map((f) => f.trim())
-              .filter(Boolean);
+        await tab.evaluate(async () => {
+          const fontsAttr = document.body.getAttribute('data-fonts') || '';
+          const pageFonts = fontsAttr
+            .split(',')
+            .map((f) => f.trim())
+            .filter(Boolean);
 
-            const WEIGHTS = ['400', '700'];
-            const STYLES = ['normal', 'italic'];
+          const WEIGHTS = ['400', '700'];
+          const STYLES = ['normal', 'italic'];
 
-            const fontLoads = [];
-            for (const family of pageFonts) {
-              for (const weight of WEIGHTS) {
-                for (const style of STYLES) {
-                  const spec = `${style} ${weight} 16px "${family}"`;
-                  fontLoads.push(document.fonts.load(spec).catch(() => null));
-                }
+          const fontLoads = [];
+          for (const family of pageFonts) {
+            for (const weight of WEIGHTS) {
+              for (const style of STYLES) {
+                const spec = `${style} ${weight} 16px "${family}"`;
+                fontLoads.push(document.fonts.load(spec).catch(() => null));
               }
             }
+          }
 
-            const imageRepairs = Array.from(document.images)
-              .filter((img) => !img.complete || img.naturalWidth === 0)
-              .map(
-                (img) =>
-                  new Promise((resolve) => {
-                    img.addEventListener('load', resolve, { once: true });
-                    img.addEventListener('error', resolve, { once: true });
-                    const src = img.src;
-                    img.src = '';
-                    img.src = src;
-                  })
-              );
+          const imageRepairs = Array.from(document.images)
+            .filter((img) => !img.complete || img.naturalWidth === 0)
+            .map(
+              (img) =>
+                new Promise((resolve) => {
+                  img.addEventListener('load', resolve, { once: true });
+                  img.addEventListener('error', resolve, { once: true });
+                  const src = img.src;
+                  img.src = '';
+                  img.src = src;
+                })
+            );
 
-            await Promise.all([
-              ...fontLoads,
-              ...imageRepairs,
-              document.fonts.ready,
-            ]);
-          }),
-          delay(10000),
-        ]);
+          await Promise.all([
+            ...fontLoads,
+            ...imageRepairs,
+            document.fonts.ready,
+          ]);
+        });
 
         await delay(500);
 
@@ -252,7 +249,7 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
 //       deviceScaleFactor: SCALE,
 //     });
 
-//     tab.setDefaultNavigationTimeout(30_000);
+//     tab.setDefaultNavigationTimeout(0);
 
 //     for (let i = 0; i < htmlPages.length; i++) {
 //       const html = htmlPages[i];

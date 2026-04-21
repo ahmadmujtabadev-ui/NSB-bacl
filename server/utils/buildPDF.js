@@ -72,10 +72,7 @@ async function fetchBytes(url) {
     } catch { return null; }
   }
   try {
-    const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 15_000);
-    const r    = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
+    const r = await fetch(url);
     if (!r.ok) { console.warn(`[pdf] HTTP ${r.status} for ${url.slice(0, 60)}`); return null; }
     return new Uint8Array(await r.arrayBuffer());
   } catch (e) { console.warn(`[pdf] fetch error:`, e.message); return null; }

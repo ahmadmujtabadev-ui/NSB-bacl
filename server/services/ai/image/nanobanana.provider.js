@@ -33,7 +33,7 @@ export async function nanobananaGenerate(req, retry = 0) {
         ...(req.seed && { seed: req.seed }),
         ...(req.referenceStrength && { reference_strength: req.referenceStrength }),
       }),
-    }, 90000);
+    });
 
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));

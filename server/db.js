@@ -3,9 +3,7 @@ import { config } from './config.js';
 
 export async function connectDB() {
   try {
-    const conn = await mongoose.connect(config.mongo.uri, {
-      serverSelectionTimeoutMS: 5000,
-    });
+    const conn = await mongoose.connect(config.mongo.uri);
     console.log(`[DB] MongoDB connected: ${conn.connection.host}`);
   } catch (err) {
     console.error('[DB] Connection failed:', err.message);

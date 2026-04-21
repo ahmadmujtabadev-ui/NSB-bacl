@@ -36,3 +36,4 @@ temp/
 uploads/
 exports/
 generated/
+.vercel

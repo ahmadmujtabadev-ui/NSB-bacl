@@ -4,7 +4,6 @@ export const AI_CONFIG = {
   textProvider:  config.ai.textProvider,
   imageProvider: config.ai.imageProvider,
   maxRetries:    config.ai.maxRetries,
-  timeoutMs:     config.ai.timeoutMs,
 
   keys: config.ai.keys,
   nanobanana: config.ai.nanobanana,

@@ -34,7 +34,7 @@ export async function geminiGenerate(req, retry = 0) {
   if (referenceUrl) {
     try {
       console.log(`[Gemini][${req.traceId}] Fetching reference image...`);
-      const imgRes = await fetchWithTimeout(referenceUrl, {}, 15000);
+      const imgRes = await fetchWithTimeout(referenceUrl);
       const mime = imgRes.headers.get('content-type')?.split(';')[0] || 'image/jpeg';
       const buf = await imgRes.arrayBuffer();
       const base64 = Buffer.from(buf).toString('base64');
@@ -69,15 +69,11 @@ export async function geminiGenerate(req, retry = 0) {
     const start = Date.now();
     console.log(`[Gemini][${req.traceId}] task=${req.task} model=${GEMINI_MODEL} hasRef=${!!referenceUrl}`);
 
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-      AI_CONFIG.timeoutMs
-    );
+    const res = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));

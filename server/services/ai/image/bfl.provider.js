@@ -30,7 +30,7 @@ export async function bflGenerate(req, retry = 0) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'x-key': AI_CONFIG.keys.bfl },
       body:    JSON.stringify(body),
-    }, 30_000);
+    });
 
     const submitText = await submitRes.text();
     console.log(`[BFL] Submit response HTTP ${submitRes.status}: ${submitText.slice(0, 300)}`);
@@ -49,13 +49,13 @@ export async function bflGenerate(req, retry = 0) {
     const start    = Date.now();
     let pollCount  = 0;
 
-    while (Date.now() - start < 120_000) {
+    while (true) {
       await sleep(3000);
       pollCount++;
 
       const pollRes  = await fetchWithTimeout(`${BFL_BASE}/v1/get_result?id=${jobId}`, {
         headers: { 'x-key': AI_CONFIG.keys.bfl },
-      }, 10_000);
+      });
 
       const pollData = await pollRes.json();
       console.log(`[BFL] Poll #${pollCount} (${Math.round((Date.now() - start) / 1000)}s): status=${pollData.status}`);
@@ -88,9 +88,6 @@ export async function bflGenerate(req, retry = 0) {
         throw new AIProviderError('BFL: request moderated — check prompt for policy violations', 'bfl');
       }
     }
-
-    throw new AIProviderError('BFL: job timed out after 120s', 'bfl');
-
   } catch (err) {
     console.error(`[BFL] Error (attempt ${retry + 1}): ${err.message}`);
     if (err instanceof AIProviderError && err.message.includes('Moderated')) throw err; // don't retry moderated

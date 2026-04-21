@@ -12,9 +12,8 @@ import http  from 'http';
  *
  * @param {string} url
  * @param {{ method?, headers?, body? }} [options]
- * @param {number} [timeoutMs]
  */
-export function fetchWithTimeout(url, options = {}, timeoutMs = 30_000) {
+export function fetchWithTimeout(url, options = {}) {
   return new Promise((resolve, reject) => {
     const parsed  = new URL(url);
     const lib     = parsed.protocol === 'https:' ? https : http;
@@ -34,13 +33,7 @@ export function fetchWithTimeout(url, options = {}, timeoutMs = 30_000) {
     let settled = false;
     const done  = (fn, val) => { if (!settled) { settled = true; fn(val); } };
 
-    const timer = setTimeout(() => {
-      nodeReq.destroy();
-      done(reject, Object.assign(new Error(`Request timed out after ${timeoutMs}ms: ${url}`), { code: 'TIMEOUT' }));
-    }, timeoutMs);
-
     const nodeReq = lib.request(reqOptions, (res) => {
-      clearTimeout(timer);
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -61,11 +54,10 @@ export function fetchWithTimeout(url, options = {}, timeoutMs = 30_000) {
         };
         done(resolve, responseObj);
       });
-      res.on('error', err => { clearTimeout(timer); done(reject, err); });
+      res.on('error', err => { done(reject, err); });
     });
 
     nodeReq.on('error', err => {
-      clearTimeout(timer);
       // Enrich error message for easier debugging
       const enriched = Object.assign(
         new Error(`${options.method || 'GET'} ${url} → ${err.message} (code: ${err.code || 'unknown'})`),
