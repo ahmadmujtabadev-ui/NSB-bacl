@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@pdf-lib/fontkit": "^1.1.1",
+    "@sparticuz/chromium-min": "^147.0.2",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.9.0",
     "cors": "^2.8.5",
@@ -22,9 +23,8 @@
     "mongoose": "^8.4.0",
     "morgan": "^1.10.0",
     "pdf-lib": "^1.17.1",
-    "@sparticuz/chromium": "^131.0.1",
     "puppeteer": "^24.40.0",
-    "puppeteer-core": "^24.40.0",
+    "puppeteer-core": "^24.42.0",
     "replicate": "^0.32.1",
     "stripe": "^15.9.0"
   },
@@ -32,6 +32,6 @@
     "nodemon": "^3.1.4"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.17.0"
   }
 }

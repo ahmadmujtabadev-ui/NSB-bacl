@@ -15,20 +15,25 @@
 
 import { PDFDocument } from 'pdf-lib';
 
-// On Vercel use the lightweight chromium layer; locally use the full puppeteer bundle
+// On Vercel use chromium-min with a remote Chromium pack; locally use the full puppeteer bundle.
 const IS_VERCEL = !!process.env.VERCEL;
+const DEFAULT_CHROMIUM_PACK_URL =
+  'https://github.com/Sparticuz/chromium/releases/download/v147.0.0/chromium-v147.0.0-pack.x64.tar';
 
 async function launchBrowser() {
   if (IS_VERCEL) {
     const [{ default: chromium }, { default: puppeteerCore }] = await Promise.all([
-      import('@sparticuz/chromium'),
+      import('@sparticuz/chromium-min'),
       import('puppeteer-core'),
     ]);
+
+    const chromiumPackUrl = process.env.CHROMIUM_REMOTE_EXEC_PATH || DEFAULT_CHROMIUM_PACK_URL;
+
     return puppeteerCore.launch({
-      args: chromium.args,
+      args: puppeteerCore.defaultArgs({ args: chromium.args, headless: 'shell' }),
       defaultViewport: chromium.defaultViewport,
-      executablePath: process.env.CHROME_EXECUTABLE_PATH || await chromium.executablePath(),
-      headless: chromium.headless,
+      executablePath: await chromium.executablePath(chromiumPackUrl),
+      headless: 'shell',
     });
   }
   const { default: puppeteer } = await import('puppeteer');
