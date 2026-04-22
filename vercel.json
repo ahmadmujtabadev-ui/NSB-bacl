@@ -1,12 +1,13 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
+  "fluid": true,
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index.js" }
   ],
   "functions": {
     "api/index.js": {
-      "memory": 1024,
-      "maxDuration": 60,
+      "maxDuration": 300,
       "includeFiles": "server/**/*"
     }
   }
