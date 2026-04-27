@@ -3,11 +3,14 @@
 // GET /api/projects/:projectId/export/pdf?template=classic|modern|editorial
 // GET /api/projects/:projectId/export/templates
 //
-// KEY FIX: editorPages are stored in MongoDB in insertion order (when each
-// page was first saved/modified), NOT in canonical book order.  Pages added
-// later (scene/moment illustrations) pile up at the end of the array.
-// sortPagesCanonically() reorders them to match the editor's display order:
-//   cover-front → chapter N opener → chapter N text-0..K → chapter N moment-1..M → … → cover-back
+// ──────────────────────────────────────────────────────────────────────────────
+// CRITICAL FIX — Chapter text pages now get their chapter's image from the
+// imageUrlMap built from project artifacts, not from fabricJson (which may not
+// exist for pages the user never opened in the editor).
+//
+// This ensures every page in the book renders with correct content in the
+// downloaded PDF, regardless of whether the user clicked through every page.
+// ──────────────────────────────────────────────────────────────────────────────
 
 import { Router } from 'express';
 import { Project } from '../models/Project.js';
@@ -31,27 +34,12 @@ function normArr(val) {
   return arr.filter((v) => v != null);
 }
 
-/**
- * Converts a page id into a numeric sort key tuple so pages render in the
- * same order the editor displays them.
- *
- * Canonical order:
- *   [0] cover-front
- *   [chN+1, 0, idx]  chapter-N-opener
- *   [chN+1, 1, idx]  chapter-N-text-0 .. chapter-N-text-K   (sorted by idx)
- *   [chN+1, 2, idx]  chapter-N-moment-1 / chapter-N-scene-1 (after text)
- *   [chN+1, 3, idx]  anything else in that chapter
- *   [99999] cover-back
- *
- * Unknown ids sort just before cover-back.
- */
 function pageOrder(id = '') {
   if (id === 'cover-front') return [0, 0, 0];
   if (id === 'cover-back')  return [99999, 0, 0];
 
-  // chapter-N-type  OR  chapter-N-type-index
   const m = id.match(/^chapter-(\d+)-([a-z]+)(?:-(\d+))?$/i);
-  if (!m) return [98000, 0, 0]; // unknown → near end
+  if (!m) return [98000, 0, 0];
 
   const chN   = parseInt(m[1], 10);
   const type  = m[2].toLowerCase();
@@ -77,12 +65,6 @@ function sortPagesCanonically(pages) {
   });
 }
 
-// ─── Illustration URL helpers ─────────────────────────────────────────────────
-
-/**
- * Pick the best image URL from a review node or raw illustration object.
- * Checks selected variant first, falls back to imageUrl field.
- */
 function pickUrl(node) {
   if (!node) return null;
   const cur = node.current ?? node;
@@ -91,24 +73,12 @@ function pickUrl(node) {
   return variants[selIdx]?.imageUrl || cur.imageUrl || cur.frontUrl || null;
 }
 
-/**
- * Build a pageId → imageUrl map from project artifacts.
- * Reads the exact paths where cover + illustration URLs are stored so it
- * works for ANY project regardless of when it was last saved.
- *
- * Data paths (as used by project-review.js):
- *   Cover front  → project.artifacts.cover.frontUrl / .frontVariants / .frontSelectedVariantIndex
- *   Cover back   → project.artifacts.cover.backUrl  / .backVariants  / .backSelectedVariantIndex
- *   Illustrations→ project.artifacts.review.illustrations[i].key + .current.imageUrl/.variants
- *   Fallback ill → project.artifacts.spreadIllustrations[i].imageUrl (spreads-only mode)
- */
 function buildImageUrlMap(project) {
   const map  = {};
   const arts = project.artifacts || {};
 
-  // ── Cover ───────────────────────────────────────────────────────────────────
+  // Cover
   const cov = arts.cover || {};
-
   const frontVariants = normArr(cov.frontVariants ?? []);
   const frontSelIdx   = cov.frontSelectedVariantIndex ?? 0;
   const frontUrl      = frontVariants[frontSelIdx]?.imageUrl || cov.frontUrl || null;
@@ -119,7 +89,7 @@ function buildImageUrlMap(project) {
   const backUrl      = backVariants[backSelIdx]?.imageUrl || cov.backUrl || null;
   if (backUrl) map['cover-back'] = backUrl;
 
-  // ── Review illustrations (primary source — already built by syncReviewFromArtifacts) ──
+  // Review illustrations
   const reviewIlls = normArr(arts.review?.illustrations ?? []);
   reviewIlls.forEach((ill) => {
     const url = pickUrl(ill);
@@ -135,7 +105,6 @@ function buildImageUrlMap(project) {
     }
   });
 
-  // ── Fallback: raw spreadIllustrations array (spreads-only mode) ─────────────
   if (reviewIlls.length === 0) {
     normArr(arts.spreadIllustrations ?? []).forEach((ill, si) => {
       const url = pickUrl(ill);
@@ -203,14 +172,29 @@ router.get('/:projectId/export/pdf', async (req, res, next) => {
       });
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Build chapterImageMap — each chapter's image URL to inherit on its text
+    // pages. Previously only extracted from saved fabricJson (so unopened
+    // chapter pages had no image). Now ALSO pulls from imageUrlMap which
+    // always has the opener/moment URLs straight from project.artifacts.
+    // ──────────────────────────────────────────────────────────────────────────
     const chapterImageMap = {};
 
+    // Step 1: from imageUrlMap (reliable source — always populated)
+    for (const [pageId, url] of Object.entries(imageUrlMap)) {
+      if (!url) continue;
+      const m = pageId.match(/^chapter-(\d+)-(opener|scene|moment)/i);
+      if (!m) continue;
+      const chN = parseInt(m[1], 10);
+      if (!chapterImageMap[chN]) chapterImageMap[chN] = url;
+    }
+
+    // Step 2: from saved fabricJson (in case user edited an opener and changed image)
     editorPages.forEach((p) => {
       const m = (p.id ?? '').match(/^chapter-(\d+)-(opener|scene|moment)/i);
       if (!m) return;
 
       const chN = parseInt(m[1], 10);
-      if (chapterImageMap[chN]) return;
 
       const fj = (() => {
         const raw = p.fabricJson;
@@ -229,7 +213,11 @@ router.get('/:projectId/export/pdf', async (req, res, next) => {
           : null) ||
         null;
 
-      if (url) {
+      // Override only if the user actually edited the image — otherwise keep
+      // the artifact-sourced URL which we set in step 1.
+      if (url && fj.backgroundImage?.src) {
+        chapterImageMap[chN] = url;
+      } else if (url && !chapterImageMap[chN]) {
         chapterImageMap[chN] = url;
       }
     });
@@ -268,4 +256,5 @@ router.get('/:projectId/export/pdf', async (req, res, next) => {
     next(err);
   }
 });
+
 export default router;
