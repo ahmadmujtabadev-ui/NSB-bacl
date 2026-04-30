@@ -76,10 +76,14 @@ const schema = new Schema({
   vocabulary: [{
     word:       { type: String, required: true },
     definition: { type: String, required: true },
+    wrongTerm:  { type: String, default: '' },  // term to avoid (e.g. "Koran" → use "Quran")
+    example:    { type: String, default: '' },
+    type:       { type: String, default: '' },
     ageGroup:   String,
     _id: false,
   }],
-  avoidTopics:       { type: [String], default: [] },
+  // Mixed allows both legacy strings and new {topic, severity, category} objects
+  avoidTopics: { type: [Schema.Types.Mixed], default: [] },
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 1. ILLUSTRATION BACKGROUND SETTINGS

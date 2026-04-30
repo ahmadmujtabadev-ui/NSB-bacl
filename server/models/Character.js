@@ -36,7 +36,7 @@ const schema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     role: {
       type: String,
-      enum: ['protagonist', 'supporting', 'villain', 'elder', 'other'],
+      enum: ['protagonist', 'supporting', 'villain', 'elder', 'mentor', 'sidekick', 'narrator', 'comic relief', 'other', 'main'],
       default: 'protagonist',
     },
 
@@ -102,7 +102,8 @@ const schema = new mongoose.Schema(
       notes: { type: String, default: '' },
     },
 
-    imageUrl: { type: String, default: '' },           // portrait
+    imageUrl: { type: String, default: '' },           // portrait / headshot
+    masterReferenceUrl: { type: String, default: '' }, // full-body style reference (character-style task)
     selectedStyle: { type: String, default: '' },
     styleApprovedAt: { type: Date },
 

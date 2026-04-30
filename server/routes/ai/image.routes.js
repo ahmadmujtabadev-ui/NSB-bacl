@@ -14,6 +14,7 @@ import { STAGE_CREDIT_COSTS } from '../../services/ai/ai.billing.js';
 import { ValidationError, NotFoundError } from '../../errors.js';
 import { Project } from '../../models/Project.js';
 import { Character } from '../../models/Character.js';
+import { CharacterTemplate } from '../../models/CharacterTemplate.js';
 
 const router = Router();
 
@@ -285,12 +286,20 @@ router.post('/generate', async (req, res, next) => {
         await Character.findByIdAndUpdate(characterId, {
           $set: {
             masterReferenceUrl: result.imageUrl,
+            imageUrl: result.imageUrl,
             selectedStyle: selectedStyle || style || 'pixar-3d',
             styleApprovedAt: new Date().toISOString(),
             status: 'generated',
           },
         });
         result.masterReferenceUrl = result.imageUrl;
+
+        // Also update the published template's thumbnail if this character is linked to one
+        if (char.publishedAsTemplateId) {
+          await CharacterTemplate.findByIdAndUpdate(char.publishedAsTemplateId, {
+            $set: { thumbnailUrl: result.imageUrl },
+          });
+        }
       }
     }
 

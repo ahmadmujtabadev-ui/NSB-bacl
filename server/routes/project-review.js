@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { Project } from '../models/Project.js';
 import { NotFoundError, ForbiddenError, ValidationError } from '../errors.js';
 import { generateStageText } from '../services/ai/text/text.service.js';
+import { generateText } from '../services/ai/text/text.providers.js';
 import { generateStageImage } from '../services/ai/image/image.service.js';
 import { deductCredits } from '../middleware/credits.js';
 import { STAGE_CREDIT_COSTS } from '../services/ai/ai.billing.js';
@@ -1001,17 +1002,34 @@ router.post('/:id/review/story/regenerate', async (req, res, next) => {
     try {
         const project = await getProjectForUser(req.params.id, req.user._id);
 
-        if (req.body.storyIdea !== undefined) {
-            project.artifacts.storyIdea = req.body.storyIdea;
+        // Accept: storyIdea, tone, focus, paragraphIndex, paragraphText, paragraphFeedback
+        const { storyIdea, tone, focus, paragraphIndex, paragraphText, paragraphFeedback } = req.body;
+
+        if (storyIdea !== undefined) {
+            project.artifacts.storyIdea = storyIdea;
             project.markModified('artifacts');
             await project.save();
         }
+
+        // Build structured feedback instructions to append to story idea
+        const feedbackParts = [];
+        if (tone)            feedbackParts.push(`Tone: ${tone}`);
+        if (focus)           feedbackParts.push(`Focus: ${focus}`);
+        if (paragraphIndex !== undefined && paragraphFeedback) {
+            feedbackParts.push(
+                `Paragraph ${paragraphIndex + 1} feedback — original: "${(paragraphText || '').slice(0, 200)}" → instruction: ${paragraphFeedback}`
+            );
+        }
+        const baseIdea = storyIdea || project.artifacts?.storyIdea || project.title;
+        const enrichedIdea = feedbackParts.length
+            ? `${baseIdea}\n\nREGENERATION INSTRUCTIONS:\n${feedbackParts.join('\n')}`
+            : baseIdea;
 
         const result = await generateStageText({
             stage: 'story',
             projectId: project._id.toString(),
             userId: req.user._id.toString(),
-            storyIdea: req.body.storyIdea || project.artifacts?.storyIdea || project.title,
+            storyIdea: enrichedIdea,
         });
 
         const refreshed = await getProjectForUser(req.params.id, req.user._id);
@@ -1043,6 +1061,36 @@ router.post('/:id/review/story/regenerate', async (req, res, next) => {
         });
 
         res.json({ message: 'Story regenerated', story: review.story, provider: result.provider, usage: result.usage });
+    } catch (e) {
+        next(e);
+    }
+});
+
+// Rewrite a single paragraph without touching the database
+router.post('/:id/review/story/rewrite-paragraph', async (req, res, next) => {
+    try {
+        await getProjectForUser(req.params.id, req.user._id); // auth check only
+
+        const { paragraphText, prevParagraph = '', nextParagraph = '', tone, focus } = req.body;
+        if (!paragraphText?.trim()) return res.status(400).json({ error: 'paragraphText is required' });
+
+        const instructions = [
+            tone  && `Tone: ${tone}`,
+            focus && `Focus: ${focus}`,
+        ].filter(Boolean).join('\n');
+
+        const system = `You are an expert Islamic children's book author. Rewrite the given paragraph. Return ONLY the rewritten paragraph text — no JSON, no explanation, no quotation marks. Preserve the Islamic context, character names, and narrative thread from the surrounding paragraphs.`;
+
+        const prompt = [
+            prevParagraph && `PRECEDING PARAGRAPH:\n${prevParagraph}`,
+            `PARAGRAPH TO REWRITE:\n${paragraphText}`,
+            nextParagraph && `FOLLOWING PARAGRAPH:\n${nextParagraph}`,
+            instructions && `REWRITE INSTRUCTIONS:\n${instructions}`,
+        ].filter(Boolean).join('\n\n');
+
+        const aiRes = await generateText({ system, prompt, maxOutputTokens: 400, stage: 'paragraph-rewrite' });
+
+        res.json({ rewrittenParagraph: (aiRes.text || '').trim() });
     } catch (e) {
         next(e);
     }

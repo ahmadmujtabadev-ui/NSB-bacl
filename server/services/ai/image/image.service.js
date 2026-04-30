@@ -11,9 +11,21 @@ import { DEFAULT_COVER_TEMPLATES } from '../../../constants/coverTemplates.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE_NEGATIVE_PROMPT = [
+  'Arabic text',
+  'Arabic script',
+  'Arabic calligraphy',
+  'Arabic letters',
+  'Arabic writing',
+  'Arabic inscription',
   'Arabic text on walls',
   'Arabic letters on background',
+  'Arabic text anywhere',
+  'Arabic characters',
+  'calligraphy',
   'calligraphy on wall',
+  'calligraphic text',
+  'calligraphic border',
+  'calligraphic band',
   'writing on wall',
   'text on background',
   'words on wall',
@@ -21,6 +33,13 @@ const BASE_NEGATIVE_PROMPT = [
   'wall text',
   'decorative Arabic script on surfaces',
   'Islamic calligraphy on wall surfaces',
+  'Islamic calligraphy',
+  'Quranic text',
+  'dua text rendered',
+  'Arabic dua on image',
+  'foreign script',
+  'non-latin script',
+  'rendered script',
   'border',
   'frame',
   'decorative frame',
@@ -789,6 +808,31 @@ BACKGROUND RULES:
 • Simple clean composition preferred over dramatic complexity
 `.trim();
 
+// Injected into every illustration prompt — image models cannot render Arabic correctly.
+// Diffusion models mangle Arabic script: disconnected letters, wrong glyph substitution,
+// visual nonsense. Never ask the model to render Arabic. Text is overlaid in post-production.
+const ARABIC_NO_RENDER_BLOCK = `
+CRITICAL — NO ARABIC OR FOREIGN SCRIPT ANYWHERE:
+• Do NOT render Arabic letters, Arabic words, or Arabic calligraphy anywhere in this image
+• Do NOT render any non-Latin script, foreign glyphs, or decorative writing of any kind
+• Do NOT add calligraphic text bands, inscription panels, or text borders
+• Do NOT place any text on walls, tiles, arches, banners, books, or any surface
+• If the scene description mentions a dua or Arabic phrase — illustrate the EMOTION and ACTION of that moment only, not the text itself
+• A child praying = show the posture and peaceful expression. A dua moment = show hands raised and serene face. Never render the words.
+`.trim();
+
+// Strip Arabic Unicode block (U+0600–U+06FF) and Arabic Presentation Forms from any string
+// before injecting into image prompts — prevents the model from seeing and attempting to render it.
+function stripArabicScript(text) {
+  if (!text) return '';
+  // Arabic (0600–06FF), Arabic Supplement (0750–077F), Arabic Extended (08A0–08FF),
+  // Arabic Presentation Forms-A (FB50–FDFF), Arabic Presentation Forms-B (FE70–FEFF)
+  return String(text)
+    .replace(/[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function textSafeZone(textPosition) {
   if (!textPosition) return '';
   if (textPosition === 'top' || textPosition === 'overlay-top') {
@@ -1028,11 +1072,13 @@ function buildSpreadPrompt({
   // 1. Style anchor — MUST be first for maximum CLIP weight
   const styleAnchor = ['FULL-BLEED DIGITAL ILLUSTRATION — no borders, no frames, no card edges, no decorative outline', universeStyle || bs.artStyle || 'Pixar 3D animation style', bs.colorPalette || kbBg?.colorStyle || 'warm pastels', 'Islamic children\'s book interior illustration, professional quality'].join(', ') + '.';
 
-  // 2. Scene — what is happening
-  const scene = spreadText
-    ? `Scene: ${spreadText}${illustrationHint ? ` — ${illustrationHint}` : ''}`
-    : illustrationHint
-      ? `Scene: ${illustrationHint}`
+  // 2. Scene — strip Arabic script before injecting to prevent the model attempting to render it
+  const cleanSpreadText = stripArabicScript(spreadText);
+  const cleanIllustrationHint = stripArabicScript(illustrationHint);
+  const scene = cleanSpreadText
+    ? `Scene: ${cleanSpreadText}${cleanIllustrationHint ? ` — ${cleanIllustrationHint}` : ''}`
+    : cleanIllustrationHint
+      ? `Scene: ${cleanIllustrationHint}`
       : 'Scene: A warm child-friendly Islamic story moment.';
 
   // 3. Contrast anchor — prevents identity blending between 2 characters
@@ -1068,9 +1114,10 @@ function buildSpreadPrompt({
 
   return [
     NO_BORDER_BLOCK,       // STRICT: no borders, no frames, no Arabic calligraphy
+    ARABIC_NO_RENDER_BLOCK, // STRICT: no Arabic script rendered anywhere — ever
     SINGLE_PANEL,          // STRICT: single full-bleed illustration only
     styleAnchor,          // style anchor FIRST — max CLIP weight
-    scene,                // what is happening
+    scene,                // what is happening (Arabic stripped)
     characterLockBlock,   // who they are (compact: name + color locks only)
     poseLockBlock,        // what pose each character is in (text descriptor)
     contrastAnchor,       // visual distinction between 2 chars (prevents blending)
@@ -1556,7 +1603,7 @@ function buildChapterBookIllustrationPrompt({
   const styleAnchor = ['FULL-BLEED DIGITAL ILLUSTRATION — no borders, no frames, no card edges, no decorative outline', universeStyle || bs.artStyle || 'Pixar 3D animation style', bs.colorPalette || kbBg?.colorStyle || 'warm pastels', 'Islamic children\'s chapter book interior illustration, professional quality'].join(', ') + '.';
 
   // 2. Scene — what is happening
-  const scene = `Scene: ${moment.illustrationHint || moment.momentTitle}`;
+  const scene = `Scene: ${stripArabicScript(moment.illustrationHint || moment.momentTitle)}`;
 
   // 3. Environment — compact (scene-level values take priority; KB fills gaps)
   const lighting = bs.lightingStyle || kbBg?.lightingStyle || 'warm golden';
@@ -1578,9 +1625,10 @@ function buildChapterBookIllustrationPrompt({
 
   return [
     NO_BORDER_BLOCK,       // STRICT: no borders, no frames, no Arabic calligraphy
+    ARABIC_NO_RENDER_BLOCK, // STRICT: no Arabic script rendered anywhere — ever
     SINGLE_PANEL,          // STRICT: single full-bleed illustration only
     styleAnchor,          // style anchor FIRST — max CLIP weight
-    scene,                // what is happening
+    scene,                // what is happening (Arabic stripped)
     characterLockBlock,   // who they are (compact: name + color locks)
     poseLockBlock,        // pose descriptor per character
     contrastAnchor,       // visual distinction between 2 chars
@@ -2208,8 +2256,8 @@ export async function generateStageImage({
 
   if (customPrompt) {
     prompt = customPrompt.includes('FRAMING RULES')
-      ? customPrompt
-      : `${NO_BORDER_BLOCK}\n\n${customPrompt}`;
+      ? `${ARABIC_NO_RENDER_BLOCK}\n\n${customPrompt}`
+      : `${NO_BORDER_BLOCK}\n\n${ARABIC_NO_RENDER_BLOCK}\n\n${customPrompt}`;
   } else if (task === 'illustration') {
     if (isSpreadOnlyProject(project)) {
       const allSpreads = normArr(project.artifacts?.spreads || []);
