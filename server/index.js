@@ -23,6 +23,7 @@ import aiRoutes from './routes/ai/index.js';
 import aiReview from './routes/project-review.js';
 import characterTemplatesRoutes from './routes/characterTemplates.js';
 import exportPdfRoutes from './routes/exportPdf.js';
+import userRoutes from './routes/user.js';
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/admin', authenticate, adminRoutes);
 // /defaults is public (no token needed); all other template routes require auth
 app.use('/api/character-templates', optionalAuthenticate, characterTemplatesRoutes);
 app.use('/api/ai', authenticate, aiRoutes);
+app.use('/api/user', authenticate, userRoutes);
 
 // ─── Error Handler ───────────────────────────────────────────────────────────
 app.use(errorHandler);
