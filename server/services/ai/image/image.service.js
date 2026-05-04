@@ -1457,6 +1457,19 @@ function buildBackCoverPrompt({
   // Build back-cover KB directives
   const backKbLines = ['BACK COVER DESIGN — LOCKED DIRECTIVES (non-negotiable):'];
 
+  // ── Back cover must visually match the selected front cover template ────────
+  if (cd.selectedCoverTemplate) {
+    const frontTpl = DEFAULT_COVER_TEMPLATES.find(t => t._id === cd.selectedCoverTemplate);
+    if (frontTpl) {
+      backKbLines.push(
+        `• ⚠ CRITICAL — MATCH FRONT COVER TEMPLATE: "${frontTpl.name}". ` +
+        `This back cover MUST share the same color palette (${frontTpl.palette?.join(', ')}), ` +
+        `same atmosphere (${frontTpl.atmosphere}), and same visual language. ` +
+        `It must look like it belongs in the same set as the front cover.`
+      );
+    }
+  }
+
   // ── Back cover template (highest priority — overrides generic rules below) ──
   if (cd.selectedBackTemplate) {
     backKbLines.push(`• BACK COVER TEMPLATE ID: ${cd.selectedBackTemplate} — apply this template's full design system.`);
@@ -1533,6 +1546,19 @@ function buildSpinePrompt({ project, bookTitle, authorName, kb, ageMode, preview
 
   // ── Spine KB directives (highest priority) ──────────────────────────────────
   const spineKbLines = ['SPINE DESIGN — LOCKED DIRECTIVES FROM KNOWLEDGE BASE:'];
+
+  // ── Spine must visually match the selected front cover template ──────────────
+  if (cd.selectedCoverTemplate) {
+    const frontTpl = DEFAULT_COVER_TEMPLATES.find(t => t._id === cd.selectedCoverTemplate);
+    if (frontTpl) {
+      spineKbLines.push(
+        `• ⚠ CRITICAL — MATCH FRONT COVER TEMPLATE: "${frontTpl.name}". ` +
+        `This spine MUST share the same color palette (${frontTpl.palette?.join(', ')}), ` +
+        `same atmosphere (${frontTpl.atmosphere}), and same visual language. ` +
+        `It must look like it belongs in the same set as the front and back covers.`
+      );
+    }
+  }
 
   if (cd.spinePromptDirective) {
     spineKbLines.push(`• PRIMARY SPINE TEMPLATE (FOLLOW EXACTLY): ${cd.spinePromptDirective}`);

@@ -370,6 +370,31 @@ function str(val) {
   return String(val).trim();
 }
 
+function cleanGeneratedDashes(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  return text
+    .replace(/\s*(?:â€”|â€“|—|–)\s*/g, (match, offset, fullText) => {
+      const before = fullText.slice(0, offset).replace(/\s+$/g, '').slice(-1);
+      const after = fullText.slice(offset + match.length).replace(/^\s+/g, '')[0] || '';
+      return /\d/.test(before) && /\d/.test(after) ? ' to ' : ', ';
+    })
+    .replace(/,\s*([.!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function cleanGeneratedTextDeep(value) {
+  if (typeof value === 'string') return cleanGeneratedDashes(value);
+  if (Array.isArray(value)) return value.map(cleanGeneratedTextDeep);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, val]) => [key, cleanGeneratedTextDeep(val)])
+    );
+  }
+  return value;
+}
+
 function lc(val) {
   return str(val).toLowerCase();
 }
@@ -2561,7 +2586,12 @@ export async function generateStageText({
       throw Object.assign(new Error(`Unknown stage: ${effectiveStage}`), { code: 'UNKNOWN_STAGE' });
   }
 
-  const { system, prompt } = builtPrompt;
+  const prompt = builtPrompt.prompt;
+  const system = `${builtPrompt.system}
+
+PUNCTUATION RULE:
+- Do NOT use em dash (—) or en dash (–) characters in generated text.
+- Use a comma, period, or the word "to" for ranges instead.`;
 
   const budget = AI_TOKEN_BUDGETS[effectiveStage] || AI_TOKEN_BUDGETS.chapter || {
     maxPromptTokens: 8000,
@@ -2609,7 +2639,8 @@ export async function generateStageText({
 
   console.log(`[TextService] Provider: ${aiRes.provider} | length: ${aiRes.text?.length}`);
 
-  const { ok, data: parsedRaw } = safeParse(aiRes.text);
+  const { ok, data: rawParsedData } = safeParse(aiRes.text);
+  const parsedRaw = cleanGeneratedTextDeep(rawParsedData);
   if (!ok) {
     console.error('[TextService] ⚠ JSON parse failed — raw preview:', aiRes.text?.slice(0, 300));
     if (effectiveStage === 'chapter' || effectiveStage === 'chapters') {
