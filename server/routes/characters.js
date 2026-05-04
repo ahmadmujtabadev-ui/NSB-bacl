@@ -33,8 +33,11 @@ const DEFAULT_POSES = [
 
 const IMAGE_NEGATIVE_PROMPT =
   'text, letters, numbers, watermark, logo, extra fingers, extra hands, extra arms, duplicate character, ' +
+  'multiple copies of same character, two versions of same character, character appearing twice, ' +
   'wrong gender, wrong age, extra people, crowd, background people, distorted face, mismatched outfit, ' +
-  'different clothing, different hijab, inconsistent colors, border, frame, card layout, collage, multi-panel, comic panel';
+  'different clothing, different hijab, inconsistent colors, border, frame, card layout, collage, multi-panel, comic panel, ' +
+  'circular frame, circular border, circular background, circular vignette, oval frame, portrait circle, ' +
+  'round background cutout, circular cutout, disc background, halo frame, medallion frame';
 
 async function ensureCloudinaryUrl(imageUrl, folder, publicId) {
   if (!imageUrl) return null;
@@ -371,10 +374,16 @@ router.post('/', async (req, res, next) => {
 
     const normalizedVisualDNA = normalizeVisualDNA(visualDNA, modestyRules);
 
+    // Strip "(copy)" / "- copy" that the frontend appends when cloning a template
+    const cleanedName = name.trim()
+      .replace(/\s*\(copy\)\s*$/gi, '')
+      .replace(/\s*[-–]\s*copy\s*$/gi, '')
+      .trim() || name.trim();
+
     const char = await Character.create({
       userId: req.user._id,
       universeId,
-      name: name.trim(),
+      name: cleanedName,
       role,
       ageRange,
       traits,

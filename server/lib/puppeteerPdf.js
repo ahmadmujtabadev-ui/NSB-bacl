@@ -53,15 +53,33 @@ async function launchBrowser() {
   });
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Platform configs ─────────────────────────────────────────────────────────
+// Viewport dims at 96 dpi; PDF dims are the Puppeteer paper size.
+// KDP/IngramSpark children's books are square 8.5×8.5 in (with 0.125" bleed
+// the physical PDF is 8.75×8.75 in). Apple Books stays portrait 6×8 in.
 
-const VIEWPORT_W = 576;   // 6in × 96dpi — matches tab.pdf() paper width in CSS pixels
-const VIEWPORT_H = 768; // Must match renderPageHtml.js PAGE_H — 250 DPI at 8" print
-// deviceScaleFactor is omitted — it has no effect on tab.pdf() quality,
-// only on tab.screenshot(). Setting it to 1 (default) avoids double memory use.
+export const PLATFORM_PDF_CONFIGS = {
+  kdp: {
+    viewportW: 840,           // 8.75 in × 96 dpi (bleed included)
+    viewportH: 840,
+    pdfWidth:  '8.75in',      // trimSize + bleed on all four edges
+    pdfHeight: '8.75in',
+  },
+  apple: {
+    viewportW: 576,           // 6 in × 96 dpi
+    viewportH: 768,
+    pdfWidth:  '6in',
+    pdfHeight: '8in',
+  },
+  ingram: {
+    viewportW: 840,
+    viewportH: 840,
+    pdfWidth:  '8.75in',
+    pdfHeight: '8.75in',
+  },
+};
 
-const PDF_W_IN = 6;        // 6 inches = 432pt
-const PDF_H_IN = 8;        // 8 inches = 576pt
+const DEFAULT_PLATFORM = PLATFORM_PDF_CONFIGS.kdp;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -72,9 +90,11 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
  *
  * @param {string[]} htmlPages    - Array of self-contained HTML strings from renderPageHtml.js
  * @param {string}   _templateId  - Unused here; kept for API compatibility
+ * @param {string}   platformId   - 'kdp' | 'apple' | 'ingram' — controls page size
  * @returns {Promise<Buffer>}     - Raw PDF bytes ready to stream/save
  */
-export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
+export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic', platformId = 'kdp') {
+  const pCfg = PLATFORM_PDF_CONFIGS[platformId] ?? DEFAULT_PLATFORM;
 
   // ── Launch ONE browser for all pages ───────────────────────────────────────
   const browser = await launchBrowser();
@@ -89,8 +109,8 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
     await tab.setExtraHTTPHeaders({ Accept: 'image/*, */*' });
 
     await tab.setViewport({
-      width: VIEWPORT_W,
-      height: VIEWPORT_H,
+      width:             pCfg.viewportW,
+      height:            pCfg.viewportH,
       deviceScaleFactor: 1,  // no effect on PDF quality, keep at 1 to avoid excess memory
     });
 
@@ -149,11 +169,11 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic') {
         await delay(500);
 
         const pdfBuffer = await tab.pdf({
-          width: `${PDF_W_IN}in`,
-          height: `${PDF_H_IN}in`,
+          width:           pCfg.pdfWidth,
+          height:          pCfg.pdfHeight,
           printBackground: true,
-          margin: { top: 0, bottom: 0, left: 0, right: 0 },
-          pageRanges: '1',
+          margin:          { top: 0, bottom: 0, left: 0, right: 0 },
+          pageRanges:      '1',
         });
 
         pdfChunks.push(Buffer.from(pdfBuffer));

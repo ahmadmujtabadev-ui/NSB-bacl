@@ -1892,6 +1892,10 @@ router.post('/', async (req, res, next) => {
     if (!name) return res.status(400).json({ error: { code: 'VALIDATION', message: 'name is required' } });
     if (!category) return res.status(400).json({ error: { code: 'VALIDATION', message: 'category is required' } });
 
+    // Strip "(copy)" / "- copy" suffixes that get appended by the frontend's
+    // template-clone flow so saved templates always have clean names.
+    const cleanedName = name.replace(/\s*\(copy\)\s*$/gi, '').replace(/\s*[-–]\s*copy\s*$/gi, '').trim() || name;
+
     let visualDNA = {};
     let modestyRules = {};
     let traits = [];
@@ -1918,7 +1922,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const template = await CharacterTemplate.create({
-      name,
+      name: cleanedName,
       description,
       category,
       thumbnailUrl,
@@ -1955,6 +1959,35 @@ router.delete('/:id', async (req, res, next) => {
 
     await tpl.deleteOne();
     res.json({ message: 'Template deleted' });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// ─── POST /api/character-templates/cleanup-copy-names ────────────────────────
+// One-time migration: strip "(copy)" / "- copy" from all templates owned by
+// the requesting user. Safe to call multiple times — idempotent.
+router.post('/cleanup-copy-names', async (req, res, next) => {
+  try {
+    const templates = await CharacterTemplate.find({
+      createdBy: req.user._id,
+      name: { $regex: /\(copy\)|[-–]\s*copy/i },
+    });
+
+    let updated = 0;
+    for (const tpl of templates) {
+      const clean = tpl.name
+        .replace(/\s*\(copy\)\s*$/gi, '')
+        .replace(/\s*[-–]\s*copy\s*$/gi, '')
+        .trim();
+      if (clean && clean !== tpl.name) {
+        tpl.name = clean;
+        await tpl.save();
+        updated++;
+      }
+    }
+
+    res.json({ message: `Cleaned ${updated} template name(s)`, updated });
   } catch (e) {
     next(e);
   }

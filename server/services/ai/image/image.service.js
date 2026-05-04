@@ -50,6 +50,20 @@ const BASE_NEGATIVE_PROMPT = [
   'rounded card outline',
   'inner border',
   'outer stroke',
+  'circular frame',
+  'circular border',
+  'circular background',
+  'circular vignette',
+  'oval frame',
+  'oval border',
+  'portrait circle',
+  'portrait oval',
+  'round background cutout',
+  'circular cutout',
+  'disc background',
+  'circular spotlight',
+  'halo frame',
+  'medallion frame',
   'comic panel',
   'multiple panels',
   'storyboard',
@@ -68,6 +82,12 @@ const BASE_NEGATIVE_PROMPT = [
   'silhouette people',
   'duplicate face',
   'duplicate child',
+  'duplicate character',
+  'multiple copies of same character',
+  'two versions of same character',
+  'character appearing twice',
+  'same character twice',
+  'mirrored character',
   'extra fingers',
   'deformed hands',
   'face distortion',
@@ -138,6 +158,16 @@ function safeStr(v) {
   return v == null ? '' : String(v).trim();
 }
 
+// Strip " (copy)", " - copy" and similar suffixes that get appended when a
+// user clones a character template. These confuse the image model and can
+// cause it to render duplicate or cloned versions of the character.
+function cleanName(name) {
+  return safeStr(name)
+    .replace(/\s*\(copy\)\s*$/gi, '')
+    .replace(/\s*[-–]\s*copy\s*$/gi, '')
+    .trim();
+}
+
 function uniqueStrings(arr = []) {
   return [...new Set(arr.filter(Boolean).map((x) => String(x).trim()).filter(Boolean))];
 }
@@ -200,22 +230,24 @@ export function isSpreadOnlyProject(project) {
 async function loadUniverseCharacters(project) {
   if (!project) return [];
 
+  let chars = [];
+
   // Prefer explicit project characters
   if (project.characterIds?.length) {
-    return Character.find({
+    chars = await Character.find({
       _id: { $in: project.characterIds },
       status: { $in: ['approved', 'generated'] },
-    }).sort({ updatedAt: -1 });
-  }
-
-  if (project.universeId) {
-    return Character.find({
+    }).sort({ updatedAt: -1 }).lean();
+  } else if (project.universeId) {
+    chars = await Character.find({
       universeId: project.universeId,
       status: { $in: ['approved', 'generated'] },
-    }).sort({ updatedAt: -1 });
+    }).sort({ updatedAt: -1 }).lean();
   }
 
-  return [];
+  // Strip "(copy)" / "- copy" suffixes so they don't leak into AI prompts and
+  // cause the model to render duplicate or cloned versions of the character.
+  return chars.map((c) => ({ ...c, name: cleanName(c.name) }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

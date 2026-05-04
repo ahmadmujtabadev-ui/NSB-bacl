@@ -30,8 +30,15 @@
 
 const PAGE_W = 750;
 const PAGE_H = 1000;
-const PDF_CSS_W = 576;
+const PDF_CSS_W = 576;  // default: Apple Books / portrait
 const PDF_CSS_H = 768;
+
+// Per-platform CSS canvas sizes (must match puppeteerPdf.js PLATFORM_PDF_CONFIGS viewports)
+const PLATFORM_CSS_DIMS = {
+  kdp:    { cssW: 840, cssH: 840 },
+  apple:  { cssW: 576, cssH: 768 },
+  ingram: { cssW: 840, cssH: 840 },
+};
 
 const FONT_COMBO_WATERMARKS = new Set();
 
@@ -455,7 +462,7 @@ function isIllustrationPage(pageType) {
   return ['opener', 'scene', 'moment', 'spread', 'cover-front', 'cover-back'].includes(pageType);
 }
 
-function htmlShell(template, bgColor, body, fontFamilies = []) {
+function htmlShell(template, bgColor, body, fontFamilies = [], cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -463,11 +470,11 @@ function htmlShell(template, bgColor, body, fontFamilies = []) {
 ${FONTS_LINK}
 <style>
   *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
-  html,body{width:${PDF_CSS_W}px;height:${PDF_CSS_H}px;overflow:hidden;background:transparent;margin:0;padding:0;}
+  html,body{width:${cssW}px;height:${cssH}px;overflow:hidden;background:transparent;margin:0;padding:0;}
   :root{--page-bg:${bgColor};}
   .page{
     position:relative;
-    width:${PDF_CSS_W}px;height:${PDF_CSS_H}px;
+    width:${cssW}px;height:${cssH}px;
     overflow:hidden;
     background-color:var(--page-bg);
   }
@@ -497,7 +504,7 @@ ${body}
 //    unknown                  → imageUrl full-bleed or text-only fallback
 // ══════════════════════════════════════════════════════════════════════════════
 
-function renderDefaultCover(page, template, isFront = true) {
+function renderDefaultCover(page, template, isFront = true, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const imageUrl = page.imageUrl || '';
   const title    = esc(page.title || page.label || '');
   const synopsis = esc(page.text || '');
@@ -516,7 +523,7 @@ function renderDefaultCover(page, template, isFront = true) {
           </div>
          </div>`
       : '';
-    return htmlShell(template, bg, imgHtml + titleOverlay);
+    return htmlShell(template, bg, imgHtml + titleOverlay, [], cssW, cssH);
   }
 
   // Back cover: image with synopsis overlay bottom-center
@@ -527,10 +534,10 @@ function renderDefaultCover(page, template, isFront = true) {
         </div>
        </div>`
     : '';
-  return htmlShell(template, bg, imgHtml + synopsisOverlay);
+  return htmlShell(template, bg, imgHtml + synopsisOverlay, [], cssW, cssH);
 }
 
-function renderDefaultIllustration(page, template) {
+function renderDefaultIllustration(page, template, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const imageUrl = page.imageUrl || page.chapterImageUrl || '';
   const caption  = esc(page.text || '');
 
@@ -548,10 +555,10 @@ function renderDefaultIllustration(page, template) {
        </div>`
     : '';
 
-  return htmlShell(template, bg, imgHtml + captionHtml);
+  return htmlShell(template, bg, imgHtml + captionHtml, [], cssW, cssH);
 }
 
-function renderDefaultTextPage(page, template) {
+function renderDefaultTextPage(page, template, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const bg      = template.pageBackground || '#fffef7';
   const subt    = esc(page.subTitle || '');
   const bodyTxt = (page.text || '').trim();
@@ -589,25 +596,25 @@ function renderDefaultTextPage(page, template) {
        </div>`
     : '';
 
-  return htmlShell(template, bg, header + divider + body + footer);
+  return htmlShell(template, bg, header + divider + body + footer, [], cssW, cssH);
 }
 
-function renderDefaultForPageType(page, template) {
+function renderDefaultForPageType(page, template, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const pt = getPageType(page.id ?? '');
 
-  if (pt === 'cover-front') return renderDefaultCover(page, template, true);
-  if (pt === 'cover-back')  return renderDefaultCover(page, template, false);
+  if (pt === 'cover-front') return renderDefaultCover(page, template, true, cssW, cssH);
+  if (pt === 'cover-back')  return renderDefaultCover(page, template, false, cssW, cssH);
 
-  if (isIllustrationPage(pt)) return renderDefaultIllustration(page, template);
+  if (isIllustrationPage(pt)) return renderDefaultIllustration(page, template, cssW, cssH);
 
-  if (pt === 'text') return renderDefaultTextPage(page, template);
+  if (pt === 'text') return renderDefaultTextPage(page, template, cssW, cssH);
 
   // Unknown page type — use imageUrl if available, otherwise text
-  if (page.imageUrl) return renderDefaultIllustration(page, template);
-  if (page.text) return renderDefaultTextPage(page, template);
+  if (page.imageUrl) return renderDefaultIllustration(page, template, cssW, cssH);
+  if (page.text) return renderDefaultTextPage(page, template, cssW, cssH);
 
   // Truly empty — final fallback
-  return htmlShell(template, template.pageBackground || '#fffef7', '');
+  return htmlShell(template, template.pageBackground || '#fffef7', '', [], cssW, cssH);
 }
 
 // ─── Layout strategies (stacked / sidebyside) ─────────────────────────────────
@@ -650,7 +657,7 @@ function extractContent(page, fabricJson) {
   return { imageUrl, imageOpacity, text };
 }
 
-function renderStackedLayout(page, fabricJson, template) {
+function renderStackedLayout(page, fabricJson, template, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const bg  = fabricJson.background || template.pageBackground || '#fdf6ee';
   const pt  = getPageType(page.id ?? '');
   const { imageUrl, imageOpacity, text } = extractContent(page, fabricJson);
@@ -664,7 +671,7 @@ function renderStackedLayout(page, fabricJson, template) {
     const captionHtml = text
       ? `<div style="position:absolute;left:6%;right:6%;bottom:5%;background:rgba(0,0,0,0.42);padding:14px 18px;border-radius:4px;"><div style="font-family:'Nunito',sans-serif;font-size:2.4vw;line-height:1.55;color:#ffffff;text-align:center;text-shadow:1px 1px 5px rgba(0,0,0,0.9);word-break:break-word;">${textToHtml(text)}</div></div>`
       : '';
-    return htmlShell(template, bg, img + captionHtml, ff);
+    return htmlShell(template, bg, img + captionHtml, ff, cssW, cssH);
   }
 
   const hdr = `<div style="position:absolute;left:0;top:0;right:0;height:80px;background:linear-gradient(135deg,${template.headerColor} 0%,${template.headerColorLight} 100%);display:flex;align-items:center;padding:0 28px;"><span style="font-family:${template.fontFamily};font-size:3.2vw;font-weight:700;color:#fff;letter-spacing:0.04em;">${esc(page.subTitle || page.label || '')}</span></div>`;
@@ -674,18 +681,18 @@ function renderStackedLayout(page, fabricJson, template) {
       `${hdr}<img src="${esc(imageUrl)}" crossorigin="anonymous" style="position:absolute;left:0;top:80px;right:0;height:46%;object-fit:cover;opacity:${imageOpacity};" alt="" loading="eager">` +
       `<div style="position:absolute;left:0;right:0;bottom:0;top:calc(80px + 46%);padding:20px 30px;overflow:hidden;background:${bg};">` +
       `<div data-role="body-text" style="font-family:${template.fontFamily};font-size:2.35vw;line-height:1.75;color:${template.textColor};white-space:pre-wrap;word-break:break-word;">${textToHtml(text)}</div></div>`,
-      ff
+      ff, cssW, cssH
     );
   }
 
   return htmlShell(template, bg,
     `${hdr}<div style="position:absolute;left:0;right:0;top:80px;bottom:0;padding:28px 38px;overflow:hidden;background:${bg};">` +
     `<div data-role="body-text" style="font-family:${template.fontFamily};font-size:2.5vw;line-height:1.8;color:${template.textColor};white-space:pre-wrap;word-break:break-word;">${textToHtml(text || '')}</div></div>`,
-    ff
+    ff, cssW, cssH
   );
 }
 
-function renderSideBySideLayout(page, fabricJson, template) {
+function renderSideBySideLayout(page, fabricJson, template, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
   const bg  = fabricJson.background || template.pageBackground || '#ffffff';
   const pt  = getPageType(page.id ?? '');
   const { imageUrl, imageOpacity, text } = extractContent(page, fabricJson);
@@ -695,7 +702,7 @@ function renderSideBySideLayout(page, fabricJson, template) {
     const img = imageUrl
       ? `<img src="${esc(imageUrl)}" crossorigin="anonymous" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:${imageOpacity};" alt="" loading="eager">`
       : `<div style="position:absolute;inset:0;background:#111;"></div>`;
-    return htmlShell(template, bg, img, ff);
+    return htmlShell(template, bg, img, ff, cssW, cssH);
   }
 
   const panel   = `<div style="position:absolute;left:0;top:0;bottom:0;width:40%;background:linear-gradient(180deg,${template.panelColor} 0%,${template.panelColorDark} 100%);"></div>`;
@@ -707,13 +714,14 @@ function renderSideBySideLayout(page, fabricJson, template) {
     ? `<img src="${esc(imageUrl)}" crossorigin="anonymous" style="position:absolute;left:41%;top:0;right:0;bottom:0;object-fit:cover;opacity:${imageOpacity};" alt="" loading="eager">`
     : `<div style="position:absolute;left:41%;top:0;right:0;bottom:0;background:#f5f5f5;"></div>`;
 
-  return htmlShell(template, bg, panel + divider + textCol + imgCol, ff);
+  return htmlShell(template, bg, panel + divider + textCol + imgCol, ff, cssW, cssH);
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-export function renderPageHtml(page, templateId = 'classic') {
+export function renderPageHtml(page, templateId = 'classic', platformId = 'apple') {
   const template = PDF_TEMPLATES[templateId] ?? PDF_TEMPLATES.classic;
+  const { cssW, cssH } = PLATFORM_CSS_DIMS[platformId] ?? PLATFORM_CSS_DIMS.apple;
 
   const raw = page.fabricJson;
   const fabricJson =
@@ -727,8 +735,8 @@ export function renderPageHtml(page, templateId = 'classic') {
 
   // ── Strategy templates (stacked / sidebyside) use page.text directly,
   //    so they work even when fabricJson is empty. They're safe to use as-is.
-  if (template.renderStrategy === 'stacked')    return renderStackedLayout(page, fabricJson, template);
-  if (template.renderStrategy === 'sidebyside') return renderSideBySideLayout(page, fabricJson, template);
+  if (template.renderStrategy === 'stacked')    return renderStackedLayout(page, fabricJson, template, cssW, cssH);
+  if (template.renderStrategy === 'sidebyside') return renderSideBySideLayout(page, fabricJson, template, cssW, cssH);
 
   // ──────────────────────────────────────────────────────────────────────────
   // CRITICAL FIX: when fabricJson has no content (page was never rendered in
@@ -738,7 +746,7 @@ export function renderPageHtml(page, templateId = 'classic') {
   // ──────────────────────────────────────────────────────────────────────────
   const hasContent = objects.length > 0 || !!bgImageObj;
   if (!hasContent) {
-    return renderDefaultForPageType(page, template);
+    return renderDefaultForPageType(page, template, cssW, cssH);
   }
 
   // ── fabricJson present — render from it (unchanged working path) ─────────
@@ -798,11 +806,11 @@ export function renderPageHtml(page, templateId = 'classic') {
 ${FONTS_LINK}
 <style>
   *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
-  html,body{width:${PDF_CSS_W}px;height:${PDF_CSS_H}px;overflow:hidden;background:transparent;margin:0;padding:0;}
+  html,body{width:${cssW}px;height:${cssH}px;overflow:hidden;background:transparent;margin:0;padding:0;}
   :root{--page-bg:${bgColor};}
   .page{
     position:relative;
-    width:${PDF_CSS_W}px;height:${PDF_CSS_H}px;
+    width:${cssW}px;height:${cssH}px;
     overflow:hidden;
     background-color:var(--page-bg);
   }
