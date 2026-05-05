@@ -18,6 +18,74 @@ import { NotFoundError, ForbiddenError } from '../errors.js';
 import { renderPageHtml, PDF_TEMPLATES } from '../lib/renderPageHtml.js';
 import { renderHtmlPagesToPdf } from '../lib/puppeteerPdf.js';
 
+// ─── Server-side image fetching (converts external URLs → base64 data URIs) ──
+// Puppeteer headless Chrome can be blocked by CORS/CDN policies when loading
+// external images from injected HTML.  Fetching in Node.js has no such limits.
+
+async function fetchAsDataUri(url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return null;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'image/*,*/*', 'User-Agent': 'NoorStudio-Export/1.0' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) { console.warn('[exportPdf] img fetch failed', res.status, url.slice(0, 80)); return null; }
+    const ct  = res.headers.get('content-type') || 'image/jpeg';
+    const buf = await res.arrayBuffer();
+    return `data:${ct};base64,${Buffer.from(buf).toString('base64')}`;
+  } catch (err) {
+    console.warn('[exportPdf] img fetch error:', err.message, url.slice(0, 80));
+    return null;
+  }
+}
+
+async function buildDataUriMap(pages) {
+  // Collect every unique external image URL referenced by any page
+  const urls = new Set();
+  for (const p of pages) {
+    if (p.imageUrl)        urls.add(p.imageUrl);
+    if (p.chapterImageUrl) urls.add(p.chapterImageUrl);
+    const raw = p.fabricJson;
+    if (raw) {
+      try {
+        const fj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (fj?.backgroundImage?.src) urls.add(fj.backgroundImage.src);
+        if (Array.isArray(fj?.objects)) {
+          for (const o of fj.objects) { if (o?.src) urls.add(o.src); }
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  const list = [...urls].filter(u => u && u.startsWith('http'));
+  console.log(`[exportPdf] Pre-fetching ${list.length} images server-side…`);
+
+  const map = {};
+  // Fetch in batches of 6 in parallel
+  for (let i = 0; i < list.length; i += 6) {
+    const batch   = list.slice(i, i + 6);
+    const results = await Promise.all(batch.map(fetchAsDataUri));
+    batch.forEach((url, idx) => {
+      if (results[idx]) {
+        map[url] = results[idx];
+        console.log(`[exportPdf] ✓ cached (${Math.round(results[idx].length / 1024)} KB) ${url.slice(0, 70)}`);
+      }
+    });
+  }
+  console.log(`[exportPdf] ${Object.keys(map).length}/${list.length} images cached as data URIs`);
+  return map;
+}
+
+function inlineImages(html, map) {
+  let out = html;
+  for (const [url, dataUri] of Object.entries(map)) {
+    // Replace every occurrence of the URL in src="..." or url(...)
+    const safe = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(safe, 'g'), dataUri);
+  }
+  return out;
+}
+
 const router = Router();
 const VALID_TEMPLATES  = new Set(Object.keys(PDF_TEMPLATES));
 const VALID_PLATFORMS  = new Set(['kdp', 'apple', 'ingram']);
@@ -73,12 +141,27 @@ function sortPagesCanonically(pages) {
   });
 }
 
+// Mirrors frontend illusUrl() in useBookEditor.ts exactly
 function pickUrl(node) {
   if (!node) return null;
-  const cur = node.current ?? node;
-  const variants = normArr(cur.variants ?? cur.frontVariants ?? []);
-  const selIdx = cur.selectedVariantIndex ?? cur.frontSelectedVariantIndex ?? 0;
-  return variants[selIdx]?.imageUrl || cur.imageUrl || cur.frontUrl || null;
+  // Try node.current first (the normal structure)
+  const cur = node.current;
+  if (cur) {
+    const variants = normArr(cur.variants ?? []);
+    const selIdx = cur.selectedVariantIndex ?? 0;
+    const fromVariant = variants[selIdx]?.imageUrl;
+    if (fromVariant) return fromVariant;
+    // Try any variant that has an imageUrl
+    for (const v of variants) { if (v?.imageUrl) return v.imageUrl; }
+    if (cur.imageUrl) return cur.imageUrl;
+  }
+  // Fallback: treat the node itself as the data object
+  const variants = normArr(node.variants ?? node.frontVariants ?? []);
+  const selIdx = node.selectedVariantIndex ?? node.frontSelectedVariantIndex ?? 0;
+  const fromVariant = variants[selIdx]?.imageUrl;
+  if (fromVariant) return fromVariant;
+  for (const v of variants) { if (v?.imageUrl) return v.imageUrl; }
+  return node.imageUrl || node.frontUrl || null;
 }
 
 // ─── splitProse — mirrors useBookEditor.ts ────────────────────────────────────
@@ -219,23 +302,22 @@ function buildAllPages(project) {
   const mode       = project.workflow?.mode       || 'picture-book';
   const isChapter  = mode === 'chapter-book';
 
-  // Cover URLs — current model: cover.front.current.variants[sel].imageUrl
-  const frontUrl =
-    cov.front?.current?.imageUrl ||
-    normArr(cov.front?.current?.variants ?? [])[cov.front?.current?.selectedVariantIndex ?? 0]?.imageUrl ||
-    normArr(cov.frontVariants ?? [])[cov.frontSelectedVariantIndex ?? 0]?.imageUrl ||
-    cov.frontUrl || '';
-
-  const backUrl =
-    cov.back?.current?.imageUrl ||
-    normArr(cov.back?.current?.variants ?? [])[cov.back?.current?.selectedVariantIndex ?? 0]?.imageUrl ||
-    normArr(cov.backVariants ?? [])[cov.backSelectedVariantIndex ?? 0]?.imageUrl ||
-    cov.backUrl || '';
-
   const illustrations = normArr(r.illustrations  ?? []);
   const structures    = normArr(r.structure?.items ?? []);
   const humanized     = normArr(r.humanized       ?? []);
   const prose         = normArr(r.prose           ?? []);
+
+  // Cover URLs — mirrors useBookEditor.ts cover extraction exactly
+  const frontUrl = pickUrl(cov.front) || pickUrl(cov) || cov.frontUrl || '';
+  const backUrl  = pickUrl(cov.back)  || cov.backUrl  || '';
+
+  console.log('[exportPdf] cover frontUrl:', frontUrl ? frontUrl.slice(0, 80) : '(empty)');
+  console.log('[exportPdf] cover backUrl:', backUrl ? backUrl.slice(0, 80) : '(empty)');
+  if (illustrations[0]) {
+    console.log('[exportPdf] sample ill keys:', Object.keys(illustrations[0]).join(', '));
+    console.log('[exportPdf] sample ill.current keys:', illustrations[0].current ? Object.keys(illustrations[0].current).join(', ') : '(no current)');
+    console.log('[exportPdf] sample ill pickUrl:', pickUrl(illustrations[0])?.slice(0, 80) ?? '(empty)');
+  }
 
   const bookPages = [];
 
@@ -389,7 +471,14 @@ router.get('/:projectId/export/pdf', async (req, res, next) => {
       return chapterImageUrl ? { ...p, chapterImageUrl } : p;
     });
 
-    const htmlPages = pagesForRender.map((page) => renderPageHtml(page, templateId, platformId));
+    // Pre-fetch every external image as a base64 data URI so Puppeteer never
+    // needs to make outbound HTTP requests (CORS/CDN policies block those).
+    const imageMap = await buildDataUriMap(pagesForRender);
+
+    const htmlPages = pagesForRender.map((page) => {
+      const html = renderPageHtml(page, templateId, platformId);
+      return inlineImages(html, imageMap);
+    });
 
     console.log('[exportPdf] launching Puppeteer for', htmlPages.length, 'pages, platform:', platformId);
     const pdfBuffer = await renderHtmlPagesToPdf(htmlPages, templateId, platformId);

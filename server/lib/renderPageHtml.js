@@ -27,6 +27,30 @@
 //     default.
 //   - Cover pages always render their imageUrl full-bleed with title overlay.
 // ──────────────────────────────────────────────────────────────────────────────
+//
+// ──────────────────────────────────────────────────────────────────────────────
+// CRITICAL FIX v2 — Background image stripping bug (issue: blank pages even
+// when user DID visit them in the editor, but never applied a layoutKey)
+// ──────────────────────────────────────────────────────────────────────────────
+// The frontend's canvasToJson() strips fabric.Image objects with
+// __background: true from the saved JSON to avoid duplicate image data
+// (the legacy assumption was: image is in page.imageUrl, render it from there).
+// But when the editor page renders the default "full-bleed image + text
+// overlay" layout (no layoutKey, no fabricJson), the auto-save then strips
+// the background image and saves a fabricJson with ONLY the text objects.
+//
+// On export, this fabricJson has objects (text), so the renderer doesn't fall
+// back to the default page-type renderer — it renders the fabricJson directly,
+// producing TEXT ON A BLANK BACKGROUND, with the image lost.
+//
+// NEW BEHAVIOUR:
+//   - When rendering from fabricJson, if NO image is present in the JSON
+//     (no backgroundImage, no image-type objects) AND the page is an
+//     illustration-style page (cover, opener, scene, moment, spread) AND
+//     page.imageUrl is set → inject a full-bleed image as the FIRST element
+//     so it sits BEHIND the text objects, replicating the editor's default
+//     layout faithfully.
+// ──────────────────────────────────────────────────────────────────────────────
 
 const PAGE_W = 750;
 const PAGE_H = 1000;
@@ -446,6 +470,7 @@ function renderPath(obj) {
 function getPageType(id = '') {
   if (id === 'cover-front') return 'cover-front';
   if (id === 'cover-back')  return 'cover-back';
+  if (/^spread-/i.test(id)) return 'spread';
   const m = id.match(/^chapter-\d+-([a-z]+)/i);
   return m ? m[1].toLowerCase() : 'unknown';
 }
@@ -460,6 +485,23 @@ function placeholderBg(id = '') {
 // Detect a "spread-style" imagery page (full-bleed image + overlay text).
 function isIllustrationPage(pageType) {
   return ['opener', 'scene', 'moment', 'spread', 'cover-front', 'cover-back'].includes(pageType);
+}
+
+// ─── NEW HELPER (FIX v2): does fabricJson contain any image? ──────────────────
+//
+// Used to detect the "stripped background image" bug — when frontend
+// canvasToJson() removed __background images during auto-save, we end up with
+// a fabricJson that has TEXT objects but NO image of any kind. In that case
+// we fall back to page.imageUrl as a full-bleed background.
+function fabricJsonHasImage(fabricJson) {
+  if (!fabricJson || typeof fabricJson !== 'object') return false;
+  if (fabricJson.backgroundImage && fabricJson.backgroundImage.src) return true;
+  const objs = Array.isArray(fabricJson.objects) ? fabricJson.objects : [];
+  for (const o of objs) {
+    if (!o) continue;
+    if (o.type === 'image' && o.src) return true;
+  }
+  return false;
 }
 
 function htmlShell(template, bgColor, body, fontFamilies = [], cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
@@ -491,17 +533,7 @@ ${body}
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  NEW: Default renderers for unrendered pages (no fabricJson yet)
-//
-//  These produce clean, on-brand layouts matching the editor's defaults so the
-//  downloaded PDF includes every page — not just the ones the user clicked
-//  through. Each renderer chooses a layout based on page type:
-//
-//    cover-front / cover-back → full-bleed image + title text
-//    opener / scene / moment  → full-bleed image + caption at bottom
-//    text                     → clean text page with page number
-//    spread                   → full-bleed image + bottom text overlay
-//    unknown                  → imageUrl full-bleed or text-only fallback
+//  Default renderers for unrendered pages (no fabricJson yet)
 // ══════════════════════════════════════════════════════════════════════════════
 
 function renderDefaultCover(page, template, isFront = true, cssW = PDF_CSS_W, cssH = PDF_CSS_H) {
@@ -739,7 +771,7 @@ export function renderPageHtml(page, templateId = 'classic', platformId = 'apple
   if (template.renderStrategy === 'sidebyside') return renderSideBySideLayout(page, fabricJson, template, cssW, cssH);
 
   // ──────────────────────────────────────────────────────────────────────────
-  // CRITICAL FIX: when fabricJson has no content (page was never rendered in
+  // FIX v1: when fabricJson has no content (page was never rendered in
   // editor), fall through to our on-brand default renderers instead of
   // producing a blank page. This ensures the downloaded PDF contains every
   // page in the book — even ones the user never opened.
@@ -749,9 +781,41 @@ export function renderPageHtml(page, templateId = 'classic', platformId = 'apple
     return renderDefaultForPageType(page, template, cssW, cssH);
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // FIX v2: when fabricJson has TEXT objects but NO image (the frontend's
+  // canvasToJson() stripped the __background image during auto-save), AND
+  // the page has an imageUrl AND it's an illustration-style page, render
+  // the imageUrl as a full-bleed background BEHIND the saved text objects.
+  //
+  // This replicates the editor's default "full-bleed image + text overlay"
+  // layout — the same one that renders in the canvas when the page has
+  // page.imageUrl but no layoutKey applied.
+  //
+  // Without this fix, pages the user visited (creating fabricJson with text
+  // but no image) export as text on a blank background — exactly what
+  // Image 2 shows: missing illustrations on chapter/scene pages.
+  // ──────────────────────────────────────────────────────────────────────────
+  const pageType = getPageType(page.id ?? '');
+  const needsImageFallback =
+    !fabricJsonHasImage(fabricJson) &&
+    !!(page.imageUrl && typeof page.imageUrl === 'string' && page.imageUrl.trim()) &&
+    isIllustrationPage(pageType);
+
   // ── fabricJson present — render from it (unchanged working path) ─────────
-  const bgColor = fabricJson.background || template.pageBackground || '#fffef7';
+  const bgColor = needsImageFallback
+    ? '#111111'  // dark fallback bg matching cover/illustration styling
+    : (fabricJson.background || template.pageBackground || '#fffef7');
   const parts   = [];
+
+  // Inject full-bleed image FIRST so it sits behind everything else.
+  // For cover-front / cover-back pages, also inject the title/synopsis
+  // overlay (since the editor renders that as a non-fabric chrome layer
+  // and it never gets serialised into fabricJson).
+  if (needsImageFallback) {
+    parts.push(
+      `<img src="${esc(page.imageUrl)}" crossorigin="anonymous" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center center;" alt="" loading="eager">`
+    );
+  }
 
   if (bgImageObj?.src) {
     const scaleX  = bgImageObj.scaleX ?? 1;
@@ -797,6 +861,46 @@ export function renderPageHtml(page, templateId = 'classic', platformId = 'apple
       default: break;
     }
     if (html) parts.push(html);
+  }
+
+  // ── FIX v2 cont'd: cover pages need their title/author overlay too ───────
+  // The editor's BookEditorPage renders the front cover by adding a "title"
+  // text object and an "author" text object (see buildInitialObjects in
+  // FabricPageCanvas.tsx). These DO get serialised into fabricJson so they
+  // should already be in `objects` above. But if for some reason they're
+  // missing (e.g. user deleted them) and the page IS the front cover with
+  // a title in page.title, render a fallback title overlay.
+  if (needsImageFallback && pageType === 'cover-front') {
+    const hasTitleText = objects.some(
+      (o) => (o?.type === 'textbox' || o?.type === 'i-text') &&
+             o?._role === 'title' &&
+             o?.text && String(o.text).trim()
+    );
+    if (!hasTitleText && page.title) {
+      parts.push(
+        `<div style="position:absolute;left:6%;right:6%;top:8%;text-align:center;z-index:10;">
+          <div style="font-family:'Fredoka One', 'Nunito', sans-serif;font-size:9vw;font-weight:700;color:#ffffff;line-height:1.1;text-shadow:2px 4px 12px rgba(0,0,0,0.85);word-break:break-word;">
+            ${esc(page.title)}
+          </div>
+         </div>`
+      );
+    }
+  }
+  if (needsImageFallback && pageType === 'cover-back') {
+    const hasSynopsisText = objects.some(
+      (o) => (o?.type === 'textbox' || o?.type === 'i-text') &&
+             o?._role === 'synopsis' &&
+             o?.text && String(o.text).trim()
+    );
+    if (!hasSynopsisText && page.text) {
+      parts.push(
+        `<div style="position:absolute;left:8%;right:8%;bottom:10%;background:rgba(255,255,255,0.88);padding:22px;border-radius:6px;z-index:10;">
+          <div style="font-family:'Merriweather', Georgia, serif;font-size:2.4vw;line-height:1.6;color:#1a1a1a;text-align:center;">
+            ${esc(page.text)}
+          </div>
+         </div>`
+      );
+    }
   }
 
   return `<!DOCTYPE html>

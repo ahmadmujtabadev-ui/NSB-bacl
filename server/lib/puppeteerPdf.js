@@ -126,32 +126,35 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic', p
           timeout: 0,
         });
 
-        await tab.evaluate(async () => {
-          const fontsAttr = document.body.getAttribute('data-fonts') || '';
-          const pageFonts = fontsAttr
-            .split(',')
-            .map((f) => f.trim())
-            .filter(Boolean);
+        // Wait for fonts and images — with a 15s ceiling per page
+        await Promise.race([
+          tab.evaluate(async () => {
+            const fontsAttr = document.body.getAttribute('data-fonts') || '';
+            const pageFonts = fontsAttr
+              .split(',')
+              .map((f) => f.trim())
+              .filter(Boolean);
 
-          const WEIGHTS = ['400', '700'];
-          const STYLES = ['normal', 'italic'];
+            const WEIGHTS = ['400', '700'];
+            const STYLES = ['normal', 'italic'];
 
-          const fontLoads = [];
-          for (const family of pageFonts) {
-            for (const weight of WEIGHTS) {
-              for (const style of STYLES) {
-                const spec = `${style} ${weight} 16px "${family}"`;
-                fontLoads.push(document.fonts.load(spec).catch(() => null));
+            const fontLoads = [];
+            for (const family of pageFonts) {
+              for (const weight of WEIGHTS) {
+                for (const style of STYLES) {
+                  const spec = `${style} ${weight} 16px "${family}"`;
+                  fontLoads.push(document.fonts.load(spec).catch(() => null));
+                }
               }
             }
-          }
 
-          const imageRepairs = Array.from(document.images)
-            .filter((img) => !img.complete || img.naturalWidth === 0)
-            .map(
+            // Force-reload any broken/not-yet-loaded images
+            const allImgs = Array.from(document.images);
+            const imageLoads = allImgs.map(
               (img) =>
                 new Promise((resolve) => {
-                  img.addEventListener('load', resolve, { once: true });
+                  if (img.complete && img.naturalWidth > 0) { resolve(null); return; }
+                  img.addEventListener('load',  resolve, { once: true });
                   img.addEventListener('error', resolve, { once: true });
                   const src = img.src;
                   img.src = '';
@@ -159,14 +162,17 @@ export async function renderHtmlPagesToPdf(htmlPages, _templateId = 'classic', p
                 })
             );
 
-          await Promise.all([
-            ...fontLoads,
-            ...imageRepairs,
-            document.fonts.ready,
-          ]);
-        });
+            await Promise.all([
+              ...fontLoads,
+              ...imageLoads,
+              document.fonts.ready,
+            ]);
+          }),
+          delay(15000),
+        ]);
 
-        await delay(500);
+        // Extra paint delay for GPU rasterization
+        await delay(800);
 
         const pdfBuffer = await tab.pdf({
           width:           pCfg.pdfWidth,
